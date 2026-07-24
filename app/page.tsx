@@ -11,7 +11,7 @@ import {
   useState,
 } from "react";
 
-type Section = "now" | "projects" | "library" | "notes";
+type Section = "now" | "projects" | "library";
 type View = Section | "archive";
 type Priority = "none" | "high" | "medium" | "low";
 type SaveStatus = "saved" | "saving" | "retry";
@@ -41,7 +41,6 @@ const views: { id: View; label: string; mark: string }[] = [
   { id: "projects", label: "Projects", mark: "02" },
   { id: "library", label: "Library", mark: "03" },
   { id: "archive", label: "Archive", mark: "04" },
-  { id: "notes", label: "Notes", mark: "05" },
 ];
 
 const priorityOrder: Priority[] = ["none", "high", "medium", "low"];
@@ -332,7 +331,6 @@ export default function Home() {
       projects: new Set(items.filter((item) => item.section === "projects" && !item.archived).map((item) => item.groupName)).size,
       library: items.filter((item) => item.section === "library" && !item.archived).length,
       archive: items.filter((item) => item.archived).length,
-      notes: items.filter((item) => item.section === "notes" && !item.archived).length,
     }),
     [items],
   );
@@ -387,8 +385,6 @@ export default function Home() {
         ? "Projects"
         : activeView === "library"
           ? "Library"
-          : activeView === "notes"
-            ? "Notes"
           : "Archive";
 
   const quickAddFor = (view: View) => {
@@ -400,7 +396,7 @@ export default function Home() {
     }
     if (view === "archive") return;
     void createItem(
-      view === "notes" ? "New note" : view === "library" ? "New reference" : "New item",
+      view === "library" ? "New reference" : "New item",
       view,
       view === "library" ? "Unsorted" : "",
     );
@@ -532,12 +528,30 @@ export default function Home() {
             <div className="empty-state">
               <span>∅</span>
               <h2>Clear space.</h2>
-              <p>{query ? "No line matches that search." : "There is nothing here yet. Add the first line."}</p>
-              {!query && activeView !== "archive" && (
+              <p>{query ? "No line matches that search." : activeView === "projects" ? "Create a project, then add lines inside it." : "There is nothing here yet. Add the first line."}</p>
+              {!query && activeView === "projects" ? (
+                showNewProject ? (
+                  <form
+                    className="new-project empty-project-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (!newProject.trim()) return;
+                      void createItem("First action", "projects", newProject.trim());
+                      setNewProject("");
+                      setShowNewProject(false);
+                    }}
+                  >
+                    <input autoFocus value={newProject} onChange={(event) => setNewProject(event.target.value)} placeholder="Project name" />
+                    <button type="submit">Create project</button>
+                  </form>
+                ) : (
+                  <button onClick={() => setShowNewProject(true)}>+ New project</button>
+                )
+              ) : !query && activeView !== "archive" && (
                 <button onClick={() => void createItem("New thought", activeView as Section)}>Add a line</button>
               )}
             </div>
-          ) : query || activeView === "now" || activeView === "archive" || activeView === "notes" ? (
+          ) : query || activeView === "now" || activeView === "archive" ? (
             <div className="line-list">
               <div className="list-rule">
                 <span>{query ? "Results" : activeView === "archive" ? "Archived lines" : "Current queue"}</span>
@@ -553,7 +567,7 @@ export default function Home() {
                   onDrop={() => reorder(item.id)}
                 />
               ))}
-              {!query && (activeView === "now" || activeView === "notes") && (
+              {!query && activeView === "now" && (
                 <InlineAdd onAdd={(value) => void createItem(value, activeView)} />
               )}
             </div>
@@ -718,26 +732,22 @@ function ItemLine({
           )}
         </div>
         <div className="item-meta">
-          {item.section !== "notes" && (
-            <>
-              <button
-                className={`priority priority-${item.priority}`}
-                title={`Priority: ${item.priority}. Click for ${nextPriority}.`}
-                onClick={() => updateItem(item.id, { priority: nextPriority })}
-              >
-                {item.priority === "none" ? "No priority" : item.priority}
-              </button>
-              <label className={`date-field ${state?.tone ?? ""}`}>
-                <span>{state?.label ?? "Set date"}</span>
-                <input
-                  aria-label={`Due date for ${item.content}`}
-                  type="date"
-                  value={item.dueDate ?? ""}
-                  onChange={(event) => updateItem(item.id, { dueDate: event.target.value || null })}
-                />
-              </label>
-            </>
-          )}
+          <button
+            className={`priority priority-${item.priority}`}
+            title={`Priority: ${item.priority}. Click for ${nextPriority}.`}
+            onClick={() => updateItem(item.id, { priority: nextPriority })}
+          >
+            {item.priority === "none" ? "No priority" : item.priority}
+          </button>
+          <label className={`date-field ${state?.tone ?? ""}`}>
+            <span>{state?.label ?? "Set date"}</span>
+            <input
+              aria-label={`Due date for ${item.content}`}
+              type="date"
+              value={item.dueDate ?? ""}
+              onChange={(event) => updateItem(item.id, { dueDate: event.target.value || null })}
+            />
+          </label>
           {item.section !== "now" && <span className="group-tag">{item.groupName}</span>}
         </div>
       </div>
@@ -754,7 +764,6 @@ function ItemLine({
           <option value="now">Now</option>
           <option value="projects">Projects</option>
           <option value="library">Library</option>
-          <option value="notes">Notes</option>
         </select>
         <button aria-label={item.archived ? "Restore from archive" : "Archive"} onClick={() => updateItem(item.id, { archived: !item.archived })}>
           {item.archived ? "↺" : "□"}

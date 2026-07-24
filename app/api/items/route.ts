@@ -1,10 +1,10 @@
 import { and, asc, desc, eq } from "drizzle-orm";
-import { ensureWorkspaceSchema, getDb } from "@/db";
+import { ensureWorkspaceSchema, getD1, getDb } from "@/db";
 import { workspaceItems } from "@/db/schema";
 
 export const dynamic = "force-dynamic";
 
-type Section = "now" | "projects" | "library" | "notes";
+type Section = "now" | "projects" | "library";
 type Priority = "none" | "high" | "medium" | "low";
 
 type SeedItem = {
@@ -49,15 +49,6 @@ const seedItems: SeedItem[] = [
   { content: "T", section: "now", bold: true },
   { content: "Hooked Audiobook", section: "now", bold: true },
 
-  { content: "Shape the Ink & Iron interface", section: "projects", groupName: "Ink & Iron" },
-  { content: "Citadel Site", section: "projects", groupName: "Citadel" },
-  { content: "Citadel Screen", section: "projects", groupName: "Citadel" },
-  { content: "Revamp portfolio site", section: "projects", groupName: "Meneses P-Site" },
-  { content: "Rubixo", section: "projects", groupName: "Rubixo" },
-  { content: "Padelista", section: "projects", groupName: "Padelista" },
-  { content: "DrivingAD", section: "projects", groupName: "DrivingAD" },
-  { content: "BetterThings", section: "projects", groupName: "BetterThings" },
-
   { content: "n8n", section: "library", groupName: "Learning & reference", bold: true },
   { content: "LINEAR ALG", section: "library", groupName: "Learning & reference", bold: true },
   { content: "LINKED-IN", section: "library", groupName: "Learning & reference", bold: true },
@@ -77,24 +68,10 @@ const seedItems: SeedItem[] = [
     url: "https://docs.google.com/document/d/1hhsaoaSiBc-RZmDwTunpeJvPF2xbmo0FKOatu0Yolek/edit?usp=sharing",
     bold: true,
   },
-  { content: "Intern Eng.SLB", section: "library", groupName: "Research & opportunities", bold: true },
-  { content: "NYU Particle Physics Research", section: "library", groupName: "Research & opportunities", bold: true },
-  { content: "Prosth. Paper", section: "library", groupName: "Research & opportunities", bold: true },
-  { content: "AI Voice Recep. via Vapi", section: "library", groupName: "Dabbled" },
-  { content: "TradeBot", section: "library", groupName: "Dabbled" },
-  { content: "Blender", section: "library", groupName: "Dabbled" },
-  { content: "Multilanguage Coding", section: "library", groupName: "Dabbled" },
-  { content: "Adobe", section: "library", groupName: "Dabbled" },
-  { content: "n8n (future)", section: "library", groupName: "Dabbled" },
 ];
 
 function isSection(value: unknown): value is Section {
-  return (
-    value === "now" ||
-    value === "projects" ||
-    value === "library" ||
-    value === "notes"
-  );
+  return value === "now" || value === "projects" || value === "library";
 }
 
 function isPriority(value: unknown): value is Priority {
@@ -135,9 +112,22 @@ async function seedIfEmpty() {
   }
 }
 
+async function retireRemovedContent() {
+  const d1 = getD1();
+  await d1.batch([
+    d1.prepare(
+      "DELETE FROM workspace_items WHERE id IN ('seed-017','seed-018','seed-019','seed-020','seed-021','seed-022','seed-023','seed-024','seed-038','seed-039','seed-040','seed-041','seed-042','seed-043','seed-044','seed-045','seed-046')",
+    ),
+    d1.prepare(
+      "UPDATE workspace_items SET section = 'library', group_name = 'Unsorted' WHERE section = 'notes'",
+    ),
+  ]);
+}
+
 export async function GET() {
   try {
     await ensureWorkspaceSchema();
+    await retireRemovedContent();
     await seedIfEmpty();
     const items = await getDb()
       .select()
