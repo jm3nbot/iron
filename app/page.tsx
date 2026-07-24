@@ -17,6 +17,12 @@ type View = Section | "archive";
 type Priority = "none" | "high" | "medium" | "low";
 type SaveStatus = "saved" | "saving" | "retry";
 type SortMode = "manual" | "priority" | "recent";
+type SelectionRect = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
 
 type Item = {
   id: string;
@@ -50,6 +56,12 @@ const views: { id: View; label: string; mark: string }[] = [
 const priorityOrder: Priority[] = ["none", "high", "medium", "low"];
 const CACHE_KEY = "ink-and-iron-workspace-v1";
 const QUEUE_KEY = "ink-and-iron-pending-v1";
+const capturePhrases = [
+  "Capture a thought…",
+  "Paste a link…",
+  "What needs your attention?",
+  "Start with one clear line…",
+];
 
 function isUrl(value: string) {
   try {
@@ -120,8 +132,15 @@ export default function Home() {
   const [sortMode, setSortMode] = useState<SortMode>("manual");
   const [sidebarWidth, setSidebarWidth] = useState(248);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(null);
+  const [selecting, setSelecting] = useState(false);
+  const [capturePhrase, setCapturePhrase] = useState(0);
+  const [captureCharacters, setCaptureCharacters] = useState(0);
+  const [captureDeleting, setCaptureDeleting] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
+  const captureRef = useRef<HTMLInputElement | null>(null);
 
   const cacheItems = useCallback((next: Item[]) => {
     localStorage.setItem(CACHE_KEY, JSON.stringify(next));
@@ -201,6 +220,30 @@ export default function Home() {
     if (storedWidth >= 190 && storedWidth <= 340) setSidebarWidth(storedWidth);
     setSidebarCollapsed(storedCollapsed === "true");
   }, []);
+
+  useEffect(() => {
+    const phrase = capturePhrases[capturePhrase];
+    let delay = captureDeleting ? 32 : 62;
+    if (!captureDeleting && captureCharacters === phrase.length) delay = 1450;
+    if (captureDeleting && captureCharacters === 0) delay = 280;
+    const timer = window.setTimeout(() => {
+      if (!captureDeleting && captureCharacters < phrase.length) {
+        setCaptureCharacters((count) => count + 1);
+      } else if (!captureDeleting) {
+        setCaptureDeleting(true);
+      } else if (captureCharacters > 0) {
+        setCaptureCharacters((count) => count - 1);
+      } else {
+        setCaptureDeleting(false);
+        setCapturePhrase((index) => (index + 1) % capturePhrases.length);
+      }
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [captureCharacters, captureDeleting, capturePhrase]);
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [activeView, query]);
 
   useEffect(() => {
     const focusSearch = (event: globalThis.KeyboardEvent) => {
@@ -424,6 +467,11 @@ export default function Home() {
     return [...grouped.entries()];
   }, [activeItems]);
 
+  const selectedItems = useMemo(
+    () => items.filter((item) => selectedIds.has(item.id)),
+    [items, selectedIds],
+  );
+
   const reorder = (targetId: string) => {
     if (!draggingId || draggingId === targetId) return;
     const dragged = items.find((item) => item.id === draggingId);
@@ -510,9 +558,116 @@ export default function Home() {
     });
   };
 
+  const startMarquee = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!event.shiftKey || event.button !== 0) return;
+    const target = event.target;
+    if (
+      target instanceof HTMLElement &&
+      target.closest("input, textarea, button, a, select, .bulk-toolbar")
+    ) {
+      return;
+    }
+    event.preventDefault();
+    window.getSelection()?.removeAllRanges();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const baseSelection = new Set(selectedIds);
+    setSelecting(true);
+    setSelectionRect({ left: startX, top: startY, width: 0, height: 0 });
+
+    const move = (moveEvent: PointerEvent) => {
+      moveEvent.preventDefault();
+      window.getSelection()?.removeAllRanges();
+      const left = Math.min(startX, moveEvent.clientX);
+      const top = Math.min(startY, moveEvent.clientY);
+      const right = Math.max(startX, moveEvent.clientX);
+      const bottom = Math.max(startY, moveEvent.clientY);
+      setSelectionRect({
+        left,
+        top,
+        width: right - left,
+        height: bottom - top,
+      });
+
+      const next = new Set(baseSelection);
+      document.querySelectorAll<HTMLElement>("[data-item-id]").forEach((element) => {
+        const bounds = element.getBoundingClientRect();
+        const intersects =
+          bounds.left < right &&
+          bounds.right > left &&
+          bounds.top < bottom &&
+          bounds.bottom > top;
+        if (intersects) {
+          const id = element.dataset.itemId;
+          if (id) next.add(id);
+        }
+      });
+      setSelectedIds(next);
+    };
+
+    const stop = () => {
+      setSelecting(false);
+      setSelectionRect(null);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", stop);
+  };
+
+  const applyToSelection = (patch: Patch) => {
+    for (const item of selectedItems) updateItem(item.id, patch);
+    setSelectedIds(new Set());
+  };
+
+  const addSharedNote = () => {
+    const note = window.prompt("Add this note to every selected item", "");
+    if (!note?.trim()) return;
+    for (const item of selectedItems) {
+      updateItem(item.id, {
+        note: [item.note?.trim(), note.trim()].filter(Boolean).join("\n"),
+      });
+    }
+    setSelectedIds(new Set());
+  };
+
+  const deleteSelection = async () => {
+    if (!selectedItems.length) return;
+    if (!window.confirm(`Permanently delete ${selectedItems.length} selected items?`)) return;
+    const removed = [...selectedItems];
+    setItems((current) => {
+      const next = current.filter((item) => !selectedIds.has(item.id));
+      cacheItems(next);
+      return next;
+    });
+    setSelectedIds(new Set());
+    setSaveStatus("saving");
+    try {
+      const responses = await Promise.all(
+        removed.map((item) =>
+          fetch("/api/items", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: item.id }),
+          }),
+        ),
+      );
+      if (responses.some((response) => !response.ok)) throw new Error("Bulk delete failed");
+      markSaved();
+    } catch {
+      setItems((current) => {
+        const ids = new Set(current.map((item) => item.id));
+        const next = [...current, ...removed.filter((item) => !ids.has(item.id))];
+        cacheItems(next);
+        return next;
+      });
+      setSaveStatus("retry");
+    }
+  };
+
   return (
     <main
-      className={`workspace ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}
+      className={`workspace ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${selecting ? "is-selecting" : ""}`}
       style={{ "--sidebar-width": `${sidebarCollapsed ? 64 : sidebarWidth}px` } as React.CSSProperties}
     >
       <aside className="rail">
@@ -588,15 +743,22 @@ export default function Home() {
           </div>
         </header>
 
-        <div className="document">
+        <div className="document" onPointerDown={startMarquee}>
           <form className="capture" onSubmit={handleCapture}>
             <span className="capture-plus">+</span>
             <input
+              ref={captureRef}
               aria-label="Quick capture"
-              placeholder="Capture a thought, task, or paste a link…"
+              placeholder=""
               value={capture}
               onChange={(event) => setCapture(event.target.value)}
             />
+            {!capture && (
+              <span className="capture-typewriter" aria-hidden="true">
+                {capturePhrases[capturePhrase].slice(0, captureCharacters)}
+                <i />
+              </span>
+            )}
             <button type="submit">Add to Now <span>↵</span></button>
           </form>
 
@@ -641,6 +803,7 @@ export default function Home() {
                 <ItemLine
                   key={item.id}
                   item={item}
+                  selected={selectedIds.has(item.id)}
                   updateItem={updateItem}
                   deleteItem={deleteItem}
                   addSubItem={() => createSubItem(item)}
@@ -672,6 +835,7 @@ export default function Home() {
                         <ItemLine
                           key={item.id}
                           item={item}
+                          selected={selectedIds.has(item.id)}
                           updateItem={updateItem}
                           deleteItem={deleteItem}
                           addSubItem={() => createSubItem(item)}
@@ -706,6 +870,41 @@ export default function Home() {
             </div>
           )}
         </div>
+        {selectionRect && (
+          <div
+            className="selection-marquee"
+            style={{
+              left: selectionRect.left,
+              top: selectionRect.top,
+              width: selectionRect.width,
+              height: selectionRect.height,
+            }}
+          />
+        )}
+        {selectedItems.length > 0 && (
+          <div className="bulk-toolbar" role="toolbar" aria-label="Selected item actions">
+            <strong>{selectedItems.length} selected</strong>
+            <select
+              aria-label="Set priority for selected items"
+              defaultValue=""
+              onChange={(event) => {
+                if (!event.target.value) return;
+                applyToSelection({ priority: event.target.value as Priority });
+              }}
+            >
+              <option value="" disabled>Priority</option>
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+              <option value="none">None</option>
+            </select>
+            <button onClick={() => applyToSelection({ bold: true })}>Bold</button>
+            <button onClick={addSharedNote}>Add note</button>
+            <button onClick={() => applyToSelection({ archived: true })}>Archive</button>
+            <button className="danger" onClick={() => void deleteSelection()}>Delete</button>
+            <button className="bulk-close" aria-label="Clear selection" onClick={() => setSelectedIds(new Set())}>×</button>
+          </div>
+        )}
       </section>
     </main>
   );
@@ -731,6 +930,7 @@ function InlineAdd({ onAdd }: { onAdd: (value: string) => void }) {
 
 function ItemLine({
   item,
+  selected,
   updateItem,
   deleteItem,
   addSubItem,
@@ -738,6 +938,7 @@ function ItemLine({
   onDrop,
 }: {
   item: Item;
+  selected: boolean;
   updateItem: (id: string, patch: Patch) => void;
   deleteItem: (item: Item) => void;
   addSubItem: () => void;
@@ -839,7 +1040,8 @@ function ItemLine({
 
   return (
     <article
-      className={`item-line ${item.completed ? "completed" : ""} ${item.indent > 0 ? "sub-point" : ""}`}
+      className={`item-line ${item.completed ? "completed" : ""} ${item.indent > 0 ? "sub-point" : ""} ${selected ? "selected-item" : ""}`}
+      data-item-id={item.id}
       style={{ "--indent": item.indent } as React.CSSProperties}
       draggable
       onMouseEnter={() => setHovered(true)}

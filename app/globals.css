@@ -13,8 +13,10 @@
   --copper-light: #874827;
   --danger: #a94f42;
   --success: #637b57;
-  --serif: Baskerville, "Baskerville Old Face", "Times New Roman", serif;
-  --sans: "Avenir Next", Avenir, "Helvetica Neue", Arial, sans-serif;
+  --serif: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --rail-serif: Baskerville, "Baskerville Old Face", "Times New Roman", serif;
+  --rail-sans: "Avenir Next", Avenir, "Helvetica Neue", Arial, sans-serif;
 }
 
 * {
@@ -83,6 +85,7 @@ select:focus-visible {
   background: rgba(237, 233, 224, .98);
   border-right: 1px solid var(--iron);
   z-index: 10;
+  font-family: var(--rail-sans);
   transition: width 180ms ease, padding 180ms ease;
 }
 
@@ -113,14 +116,14 @@ select:focus-visible {
   border: 1px solid var(--steel-light);
   border-radius: 2px;
   color: var(--copper-light);
-  font: 700 12px/1 var(--serif);
+  font: 700 12px/1 var(--rail-serif);
   letter-spacing: -.04em;
   box-shadow: inset 0 0 0 3px #ede9e0, inset 0 0 0 4px rgba(166,95,56,.2);
 }
 
 .brand strong {
   display: block;
-  font: 600 17px/1.1 var(--serif);
+  font: 600 17px/1.1 var(--rail-serif);
   letter-spacing: .01em;
 }
 
@@ -183,7 +186,7 @@ select:focus-visible {
 
 .nav-mark {
   color: var(--paper-faint);
-  font: 9px/1 var(--serif);
+  font: 9px/1 var(--rail-serif);
   letter-spacing: .08em;
 }
 
@@ -349,7 +352,7 @@ select:focus-visible {
 .rail-foot p {
   margin: 12px 0 0;
   color: #aaa397;
-  font: italic 12px/1.4 var(--serif);
+  font: italic 12px/1.4 var(--rail-serif);
 }
 
 .canvas {
@@ -489,6 +492,7 @@ select:focus-visible {
 }
 
 .capture {
+  position: relative;
   display: grid;
   grid-template-columns: 25px minmax(0, 1fr) auto;
   align-items: center;
@@ -500,6 +504,34 @@ select:focus-visible {
   background: linear-gradient(100deg, rgba(166,95,56,.055), rgba(255,255,255,.5));
   box-shadow: 0 16px 50px rgba(0,0,0,.12);
   transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
+}
+
+.capture-typewriter {
+  position: absolute;
+  left: 52px;
+  top: 50%;
+  max-width: calc(100% - 190px);
+  overflow: hidden;
+  color: #958f84;
+  font: 14px/1.3 var(--serif);
+  pointer-events: none;
+  text-overflow: ellipsis;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+
+.capture-typewriter i {
+  display: inline-block;
+  width: 1px;
+  height: 1em;
+  margin-left: 2px;
+  background: var(--copper);
+  animation: caret-blink .75s steps(1) infinite;
+  vertical-align: -.12em;
+}
+
+@keyframes caret-blink {
+  50% { opacity: 0; }
 }
 
 .capture:focus-within {
@@ -580,6 +612,110 @@ select:focus-visible {
   box-shadow: -3px 0 0 rgba(166,95,56,.18);
   transform: translateX(2px);
   z-index: 4;
+}
+
+.item-line.selected-item {
+  border-color: rgba(166,95,56,.45);
+  background: rgba(166,95,56,.09);
+  box-shadow: inset 3px 0 0 var(--copper);
+}
+
+.item-line.selected-item::after {
+  content: "Selected";
+  position: absolute;
+  right: 6px;
+  bottom: 3px;
+  color: var(--copper-light);
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.is-selecting,
+.is-selecting * {
+  cursor: crosshair !important;
+  user-select: none !important;
+}
+
+.selection-marquee {
+  position: fixed;
+  border: 1px solid rgba(166,95,56,.8);
+  border-radius: 3px;
+  background: rgba(166,95,56,.12);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.45);
+  pointer-events: none;
+  z-index: 100;
+}
+
+.bulk-toolbar {
+  position: fixed;
+  left: calc(50% + (var(--sidebar-width, 248px) / 2));
+  bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px;
+  border: 1px solid var(--steel);
+  border-radius: 5px;
+  background: rgba(251,250,246,.98);
+  box-shadow: 0 18px 45px rgba(36,34,30,.18);
+  transform: translateX(-50%);
+  animation: bulk-in 160ms ease both;
+  z-index: 90;
+}
+
+.bulk-toolbar strong {
+  padding: 0 10px 0 7px;
+  color: var(--paper-muted);
+  font-size: 9px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.bulk-toolbar button,
+.bulk-toolbar select {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--iron);
+  border-radius: 3px;
+  background: var(--ink-raised);
+  color: var(--paper-muted);
+  cursor: pointer;
+  font-size: 9px;
+  transition: border-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.bulk-toolbar button:hover,
+.bulk-toolbar select:hover {
+  border-color: var(--steel-light);
+  color: var(--paper);
+  transform: translateY(-1px);
+}
+
+.bulk-toolbar button.danger:hover {
+  border-color: rgba(169,79,66,.5);
+  color: var(--danger);
+}
+
+.bulk-toolbar .bulk-close {
+  width: 30px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 15px;
+}
+
+@keyframes bulk-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
 }
 
 .drag-handle,
@@ -1153,6 +1289,13 @@ select:focus-visible {
     display: none;
   }
 
+  .bulk-toolbar {
+    left: 50%;
+    bottom: 76px;
+    max-width: calc(100vw - 24px);
+    overflow-x: auto;
+  }
+
   .rail::after,
   .brand,
   .rail-foot {
@@ -1255,6 +1398,12 @@ select:focus-visible {
 }
 
 @media (max-width: 560px) {
+  .capture-typewriter {
+    left: 42px;
+    max-width: calc(100% - 95px);
+    font-size: 12px;
+  }
+
   .sort-control > span {
     display: none;
   }

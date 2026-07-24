@@ -11,7 +11,8 @@ test("renders the Ink & Iron workspace shell", async () => {
   ]);
   assert.match(layout, /Ink & Iron — Personal Command Center/);
   assert.match(page, /Personal command center/i);
-  assert.match(page, /Capture a thought, task, or paste a link/i);
+  assert.match(page, /Capture a thought…/i);
+  assert.match(page, /Paste a link…/i);
   assert.doesNotMatch(`${layout}\n${page}`, /codex-preview|react-loading-skeleton/i);
 });
 
