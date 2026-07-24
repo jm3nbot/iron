@@ -3,6 +3,7 @@
 import {
   FormEvent,
   KeyboardEvent,
+  PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -14,6 +15,7 @@ type Section = "now" | "projects" | "library" | "notes";
 type View = Section | "archive";
 type Priority = "none" | "high" | "medium" | "low";
 type SaveStatus = "saved" | "saving" | "retry";
+type SortMode = "manual" | "priority" | "recent";
 
 type Item = {
   id: string;
@@ -55,6 +57,19 @@ function isUrl(value: string) {
   }
 }
 
+function findUrl(value: string) {
+  const match = value.match(/https?:\/\/[^\s<>"']+/i);
+  return match?.[0].replace(/[),.;!?]+$/, "") ?? null;
+}
+
+function linkLabel(value: string) {
+  try {
+    return new URL(value).hostname.replace(/^www\./, "");
+  } catch {
+    return "Open link";
+  }
+}
+
 function dueState(date: string | null) {
   if (!date) return null;
   const today = new Date();
@@ -71,6 +86,23 @@ function sortItems(a: Item, b: Item) {
   return a.position - b.position || a.createdAt.localeCompare(b.createdAt);
 }
 
+function sortVisibleItems(items: Item[], mode: SortMode) {
+  const copy = [...items];
+  if (mode === "recent") {
+    return copy.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+  if (mode === "priority") {
+    const weight: Record<Priority, number> = {
+      high: 0,
+      medium: 1,
+      low: 2,
+      none: 3,
+    };
+    return copy.sort((a, b) => weight[a.priority] - weight[b.priority] || sortItems(a, b));
+  }
+  return copy.sort(sortItems);
+}
+
 export default function Home() {
   const [items, setItems] = useState<Item[]>([]);
   const [activeView, setActiveView] = useState<View>("now");
@@ -82,6 +114,9 @@ export default function Home() {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [newProject, setNewProject] = useState("");
   const [showNewProject, setShowNewProject] = useState(false);
+  const [sortMode, setSortMode] = useState<SortMode>("manual");
+  const [sidebarWidth, setSidebarWidth] = useState(248);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
@@ -158,6 +193,13 @@ export default function Home() {
   }, [cacheItems, flushPending]);
 
   useEffect(() => {
+    const storedWidth = Number(localStorage.getItem("ink-and-iron-sidebar-width"));
+    const storedCollapsed = localStorage.getItem("ink-and-iron-sidebar-collapsed");
+    if (storedWidth >= 190 && storedWidth <= 340) setSidebarWidth(storedWidth);
+    setSidebarCollapsed(storedCollapsed === "true");
+  }, []);
+
+  useEffect(() => {
     const focusSearch = (event: globalThis.KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
@@ -184,13 +226,15 @@ export default function Home() {
     async (content: string, section: Section, groupName = "", url: string | null = null) => {
       const clean = content.trim();
       if (!clean) return;
+      const detectedUrl = url ?? findUrl(clean);
+      const displayContent = isUrl(clean) ? linkLabel(clean) : clean;
       const timestamp = new Date().toISOString();
       const optimistic: Item = {
         id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        content: clean,
+        content: displayContent,
         section,
         groupName,
-        url,
+        url: detectedUrl,
         priority: "none",
         dueDate: null,
         completed: false,
@@ -211,7 +255,7 @@ export default function Home() {
         const response = await fetch("/api/items", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: clean, section, groupName, url }),
+          body: JSON.stringify({ content: displayContent, section, groupName, url: detectedUrl }),
         });
         if (!response.ok) throw new Error("Create failed");
         const { item } = (await response.json()) as { item: Item };
@@ -269,17 +313,18 @@ export default function Home() {
   const activeItems = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (needle) {
-      return items
+      const results = items
         .filter((item) =>
           `${item.content} ${item.groupName} ${item.url ?? ""}`.toLowerCase().includes(needle),
-        )
-        .sort(sortItems);
+        );
+      return sortVisibleItems(results, sortMode);
     }
-    if (activeView === "archive") return items.filter((item) => item.archived).sort(sortItems);
-    return items
-      .filter((item) => item.section === activeView && !item.archived)
-      .sort(sortItems);
-  }, [activeView, items, query]);
+    if (activeView === "archive") return sortVisibleItems(items.filter((item) => item.archived), sortMode);
+    return sortVisibleItems(
+      items.filter((item) => item.section === activeView && !item.archived),
+      sortMode,
+    );
+  }, [activeView, items, query, sortMode]);
 
   const counts = useMemo(
     () => ({
@@ -361,8 +406,39 @@ export default function Home() {
     );
   };
 
+  const resizeSidebar = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    if (sidebarCollapsed) setSidebarCollapsed(false);
+    const startX = event.clientX;
+    const startWidth = sidebarCollapsed ? 190 : sidebarWidth;
+    const move = (moveEvent: PointerEvent) => {
+      const width = Math.max(190, Math.min(340, startWidth + moveEvent.clientX - startX));
+      setSidebarWidth(width);
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      setSidebarWidth((width) => {
+        localStorage.setItem("ink-and-iron-sidebar-width", String(width));
+        return width;
+      });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+  };
+
+  const toggleSidebar = () => {
+    setSidebarCollapsed((current) => {
+      localStorage.setItem("ink-and-iron-sidebar-collapsed", String(!current));
+      return !current;
+    });
+  };
+
   return (
-    <main className="workspace">
+    <main
+      className={`workspace ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}
+      style={{ "--sidebar-width": `${sidebarCollapsed ? 64 : sidebarWidth}px` } as React.CSSProperties}
+    >
       <aside className="rail">
         <div className="brand">
           <span className="brand-mark">I&amp;I</span>
@@ -400,6 +476,10 @@ export default function Home() {
           </div>
           <p>Make the next move smaller.</p>
         </div>
+        <button className="sidebar-toggle" onClick={toggleSidebar} aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}>
+          {sidebarCollapsed ? "›" : "‹"}
+        </button>
+        <button className="sidebar-resize" onPointerDown={resizeSidebar} aria-label="Resize sidebar" />
       </aside>
 
       <section className="canvas">
@@ -409,17 +489,27 @@ export default function Home() {
             <i>/</i>
             <em>{viewTitle}</em>
           </div>
-          <label className="search">
-            <span aria-hidden="true">⌕</span>
-            <input
-              ref={searchRef}
-              aria-label="Search everything"
-              placeholder="Search everything"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-            <kbd>⌘ K</kbd>
-          </label>
+          <div className="topbar-tools">
+            <label className="sort-control">
+              <span>Filter by</span>
+              <select value={sortMode} onChange={(event) => setSortMode(event.target.value as SortMode)}>
+                <option value="manual">Manual order</option>
+                <option value="priority">Priority</option>
+                <option value="recent">Recent</option>
+              </select>
+            </label>
+            <label className="search">
+              <span aria-hidden="true">⌕</span>
+              <input
+                ref={searchRef}
+                aria-label="Search everything"
+                placeholder="Search everything"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+              <kbd>⌘ K</kbd>
+            </label>
+          </div>
         </header>
 
         <div className="document">
@@ -564,7 +654,11 @@ function ItemLine({
   const commit = () => {
     const clean = draft.trim() || "Untitled";
     setDraft(clean);
-    if (clean !== item.content) updateItem(item.id, { content: clean });
+    const detectedUrl = findUrl(clean);
+    const patch: Patch = {};
+    if (clean !== item.content) patch.content = clean;
+    if (detectedUrl && detectedUrl !== item.url) patch.url = detectedUrl;
+    if (Object.keys(patch).length) updateItem(item.id, patch);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -618,7 +712,9 @@ function ItemLine({
             onKeyDown={onKeyDown}
           />
           {item.url && (
-            <a href={item.url} target="_blank" rel="noreferrer" aria-label={`Open link for ${item.content}`}>↗</a>
+            <a className="item-link" href={item.url} target="_blank" rel="noreferrer" aria-label={`Open link for ${item.content}`}>
+              {linkLabel(item.url)} <span>↗</span>
+            </a>
           )}
         </div>
         <div className="item-meta">
