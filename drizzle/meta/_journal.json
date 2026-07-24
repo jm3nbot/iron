@@ -22,6 +22,13 @@
       "when": 1784889081856,
       "tag": "0002_fixed_adam_warlock",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1784890515304,
+      "tag": "0003_demonic_wolfsbane",
+      "breakpoints": true
     }
   ]
 }

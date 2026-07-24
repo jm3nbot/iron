@@ -937,6 +937,8 @@ select:focus-visible {
   cursor: pointer;
   font-size: 8px;
   letter-spacing: .05em;
+  transform-origin: left center;
+  transition: color 130ms ease, font-weight 130ms ease, transform 130ms ease, background 130ms ease;
 }
 
 .date-field input {
@@ -949,11 +951,59 @@ select:focus-visible {
 
 .date-field.overdue {
   color: var(--danger);
+  font-weight: 750;
 }
 
-.date-field.today,
+.date-field.today {
+  padding: 2px 5px;
+  border-radius: 8px;
+  background: rgba(169,79,66,.1);
+  color: var(--danger);
+  font-weight: 750;
+}
+
+.date-field.imminent {
+  color: var(--copper-light);
+  font-weight: 700;
+}
+
 .date-field.upcoming {
   color: var(--copper-light);
+  font-weight: 580;
+}
+
+.item-line:hover .date-field.has-date {
+  border-radius: 8px;
+  background: rgba(166,95,56,.075);
+  font-weight: 750;
+  transform: translateY(-1px) scale(1.06);
+}
+
+.archived-date {
+  color: var(--paper-faint);
+  font-size: 8px;
+  letter-spacing: .04em;
+}
+
+.note-indicator {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(166,95,56,.28);
+  border-radius: 50%;
+  background: rgba(166,95,56,.07);
+  color: var(--copper-light);
+  cursor: pointer;
+  font-size: 9px;
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.note-indicator:hover {
+  border-color: rgba(166,95,56,.55);
+  background: rgba(166,95,56,.13);
+  transform: translateY(-1px) scale(1.08);
 }
 
 .group-tag {

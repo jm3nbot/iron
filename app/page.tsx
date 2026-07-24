@@ -37,6 +37,7 @@ type Item = {
   dueDate: string | null;
   completed: boolean;
   archived: boolean;
+  archivedAt: string | null;
   position: number;
   indent: number;
   bold: boolean;
@@ -93,6 +94,7 @@ function dueState(date: string | null) {
   const days = Math.round((due.getTime() - today.getTime()) / 86400000);
   if (days < 0) return { label: `${Math.abs(days)}d overdue`, tone: "overdue" };
   if (days === 0) return { label: "Due today", tone: "today" };
+  if (days <= 2) return { label: `Due in ${days}d`, tone: "imminent" };
   if (days <= 7) return { label: `Due in ${days}d`, tone: "upcoming" };
   return { label: due.toLocaleDateString(undefined, { month: "short", day: "numeric" }), tone: "quiet" };
 }
@@ -129,6 +131,8 @@ export default function Home() {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [newProject, setNewProject] = useState("");
   const [showNewProject, setShowNewProject] = useState(false);
+  const [newCollection, setNewCollection] = useState("");
+  const [showNewCollection, setShowNewCollection] = useState(false);
   const [sortMode, setSortMode] = useState<SortMode>("manual");
   const [sidebarWidth, setSidebarWidth] = useState(248);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -141,6 +145,7 @@ export default function Home() {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const captureRef = useRef<HTMLInputElement | null>(null);
+  const marqueeCleanupRef = useRef<(() => void) | null>(null);
 
   const cacheItems = useCallback((next: Item[]) => {
     localStorage.setItem(CACHE_KEY, JSON.stringify(next));
@@ -242,11 +247,14 @@ export default function Home() {
   }, [captureCharacters, captureDeleting, capturePhrase]);
 
   useEffect(() => {
-    setSelectedIds(new Set());
-  }, [activeView, query]);
-
-  useEffect(() => {
     const focusSearch = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        marqueeCleanupRef.current?.();
+        setSelectedIds(new Set());
+        setSelectionRect(null);
+        setSelecting(false);
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         searchRef.current?.focus();
@@ -296,6 +304,7 @@ export default function Home() {
         dueDate: null,
         completed: false,
         archived: false,
+        archivedAt: null,
         position:
           positionOverride ??
           items.filter((item) => item.section === section && item.groupName === groupName).length,
@@ -522,6 +531,10 @@ export default function Home() {
       setShowNewProject(true);
       return;
     }
+    if (view === "library") {
+      setShowNewCollection(true);
+      return;
+    }
     if (view === "archive") return;
     void createItem(
       view === "library" ? "New reference" : "New item",
@@ -605,19 +618,21 @@ export default function Home() {
       setSelectedIds(next);
     };
 
-    const stop = () => {
+    const cleanup = () => {
+      marqueeCleanupRef.current = null;
       setSelecting(false);
       setSelectionRect(null);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
     };
+    const stop = () => cleanup();
+    marqueeCleanupRef.current = cleanup;
     window.addEventListener("pointermove", move, { passive: false });
     window.addEventListener("pointerup", stop);
   };
 
   const applyToSelection = (patch: Patch) => {
     for (const item of selectedItems) updateItem(item.id, patch);
-    setSelectedIds(new Set());
   };
 
   const addSharedNote = () => {
@@ -628,7 +643,6 @@ export default function Home() {
         note: [item.note?.trim(), note.trim()].filter(Boolean).join("\n"),
       });
     }
-    setSelectedIds(new Set());
   };
 
   const deleteSelection = async () => {
@@ -770,7 +784,7 @@ export default function Home() {
             <div className="empty-state">
               <span>∅</span>
               <h2>Clear space.</h2>
-              <p>{query ? "No line matches that search." : activeView === "projects" ? "Create a project, then add lines inside it." : "There is nothing here yet. Add the first line."}</p>
+              <p>{query ? "No line matches that search." : activeView === "projects" ? "Create a project, then add lines inside it." : activeView === "library" ? "Create a collection, then add references inside it." : "There is nothing here yet. Add the first line."}</p>
               {!query && activeView === "projects" ? (
                 showNewProject ? (
                   <form
@@ -788,6 +802,24 @@ export default function Home() {
                   </form>
                 ) : (
                   <button onClick={() => setShowNewProject(true)}>+ New project</button>
+                )
+              ) : !query && activeView === "library" ? (
+                showNewCollection ? (
+                  <form
+                    className="new-project empty-project-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (!newCollection.trim()) return;
+                      void createItem("First item", "library", newCollection.trim());
+                      setNewCollection("");
+                      setShowNewCollection(false);
+                    }}
+                  >
+                    <input autoFocus value={newCollection} onChange={(event) => setNewCollection(event.target.value)} placeholder="Collection name" />
+                    <button type="submit">Create collection</button>
+                  </form>
+                ) : (
+                  <button onClick={() => setShowNewCollection(true)}>+ New collection</button>
                 )
               ) : !query && activeView !== "archive" && (
                 <button onClick={() => void createItem("New thought", activeView as Section)}>Add a line</button>
@@ -867,6 +899,25 @@ export default function Home() {
                   <button className="add-project" onClick={() => setShowNewProject(true)}>+ New project</button>
                 )
               )}
+              {activeView === "library" && (
+                showNewCollection ? (
+                  <form
+                    className="new-project"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (!newCollection.trim()) return;
+                      void createItem("First item", "library", newCollection.trim());
+                      setNewCollection("");
+                      setShowNewCollection(false);
+                    }}
+                  >
+                    <input autoFocus value={newCollection} onChange={(event) => setNewCollection(event.target.value)} placeholder="Collection name" />
+                    <button type="submit">Create collection</button>
+                  </form>
+                ) : (
+                  <button className="add-project" onClick={() => setShowNewCollection(true)}>+ New collection</button>
+                )
+              )}
             </div>
           )}
         </div>
@@ -890,6 +941,7 @@ export default function Home() {
               onChange={(event) => {
                 if (!event.target.value) return;
                 applyToSelection({ priority: event.target.value as Priority });
+                event.currentTarget.value = "";
               }}
             >
               <option value="" disabled>Priority</option>
@@ -900,7 +952,7 @@ export default function Home() {
             </select>
             <button onClick={() => applyToSelection({ bold: true })}>Bold</button>
             <button onClick={addSharedNote}>Add note</button>
-            <button onClick={() => applyToSelection({ archived: true })}>Archive</button>
+            <button onClick={() => applyToSelection({ archived: true, archivedAt: new Date().toISOString() })}>Archive</button>
             <button className="danger" onClick={() => void deleteSelection()}>Delete</button>
             <button className="bulk-close" aria-label="Clear selection" onClick={() => setSelectedIds(new Set())}>×</button>
           </div>
@@ -967,7 +1019,7 @@ function ItemLine({
       }
       if (event.key.toLowerCase() === "n") {
         event.preventDefault();
-        setNoteOpen(true);
+        setNoteOpen((open) => !open);
       }
       if (event.key.toLowerCase() === "b") {
         event.preventDefault();
@@ -1035,7 +1087,7 @@ function ItemLine({
     ) {
       return;
     }
-    setNoteOpen(true);
+    setNoteOpen((open) => !open);
   };
 
   return (
@@ -1093,7 +1145,7 @@ function ItemLine({
           >
             {item.priority === "none" ? "No priority" : item.priority}
           </button>
-          <label className={`date-field ${state?.tone ?? ""}`}>
+          <label className={`date-field ${item.dueDate ? "has-date" : ""} ${state?.tone ?? ""}`}>
             <span>{state?.label ?? "Set date"}</span>
             <input
               aria-label={`Due date for ${item.content}`}
@@ -1102,7 +1154,17 @@ function ItemLine({
               onChange={(event) => updateItem(item.id, { dueDate: event.target.value || null })}
             />
           </label>
+          {item.archivedAt && (
+            <span className="archived-date">
+              Archived {new Date(item.archivedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+            </span>
+          )}
           {item.section !== "now" && <span className="group-tag">{item.groupName}</span>}
+          {item.note?.trim() && !noteOpen && (
+            <button className="note-indicator" title="This item has a note" aria-label={`Open note for ${item.content}`} onClick={() => setNoteOpen(true)}>
+              ✎
+            </button>
+          )}
         </div>
         {noteOpen && (
           <div className="item-note">
@@ -1134,7 +1196,7 @@ function ItemLine({
         <button className={noteOpen ? "selected" : ""} aria-label="Add note" title="Add note" onClick={() => setNoteOpen((open) => !open)}>N</button>
         <button aria-label="Add sub-point" title="Add sub-point" onClick={addSubItem}>↳</button>
         <button aria-label="Decrease indent" disabled={item.indent === 0} onClick={() => updateItem(item.id, { indent: item.indent - 1 })}>←</button>
-        <button aria-label="Increase indent" disabled={item.indent === 2} onClick={() => updateItem(item.id, { indent: item.indent + 1 })}>→</button>
+        <button aria-label="Increase indent" disabled={item.indent === 3} onClick={() => updateItem(item.id, { indent: item.indent + 1 })}>→</button>
         <select
           aria-label={`Move ${item.content}`}
           value={item.section}
@@ -1144,7 +1206,15 @@ function ItemLine({
           <option value="projects">Projects</option>
           <option value="library">Library</option>
         </select>
-        <button aria-label={item.archived ? "Restore from archive" : "Archive"} onClick={() => updateItem(item.id, { archived: !item.archived })}>
+        <button
+          aria-label={item.archived ? "Restore from archive" : "Archive"}
+          onClick={() =>
+            updateItem(item.id, {
+              archived: !item.archived,
+              archivedAt: item.archived ? null : new Date().toISOString(),
+            })
+          }
+        >
           {item.archived ? "↺" : "□"}
         </button>
         {item.archived && (

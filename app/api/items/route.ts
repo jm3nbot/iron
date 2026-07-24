@@ -125,6 +125,7 @@ async function seedIfEmpty() {
       dueDate: null,
       completed: false,
       archived: false,
+      archivedAt: null,
       position,
       indent: 0,
       bold: item.bold ?? false,
@@ -214,6 +215,7 @@ export async function POST(request: Request) {
       dueDate: typeof payload.dueDate === "string" ? payload.dueDate : null,
       completed: false,
       archived: false,
+      archivedAt: null,
       position:
         typeof payload.position === "number"
           ? Math.max(0, Math.round(payload.position))
@@ -259,6 +261,7 @@ export async function PATCH(request: Request) {
     if (payload.dueDate === null || typeof payload.dueDate === "string") changes.dueDate = payload.dueDate;
     if (typeof payload.completed === "boolean") changes.completed = payload.completed;
     if (typeof payload.archived === "boolean") changes.archived = payload.archived;
+    if (payload.archivedAt === null || typeof payload.archivedAt === "string") changes.archivedAt = payload.archivedAt;
     if (typeof payload.position === "number") changes.position = Math.max(0, Math.round(payload.position));
     if (typeof payload.indent === "number") changes.indent = Math.max(0, Math.min(2, Math.round(payload.indent)));
     if (typeof payload.bold === "boolean") changes.bold = payload.bold;

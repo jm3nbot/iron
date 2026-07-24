@@ -1,0 +1,1 @@
+ALTER TABLE `workspace_items` ADD `archived_at` text;

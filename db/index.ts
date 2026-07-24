@@ -36,6 +36,7 @@ export function ensureWorkspaceSchema() {
             due_date TEXT,
             completed INTEGER NOT NULL DEFAULT 0,
             archived INTEGER NOT NULL DEFAULT 0,
+            archived_at TEXT,
             position INTEGER NOT NULL DEFAULT 0,
             indent INTEGER NOT NULL DEFAULT 0,
             bold INTEGER NOT NULL DEFAULT 0,
@@ -66,6 +67,11 @@ export function ensureWorkspaceSchema() {
       if (!columns.has("parent_id")) {
         additions.push(
           d1.prepare("ALTER TABLE workspace_items ADD COLUMN parent_id TEXT"),
+        );
+      }
+      if (!columns.has("archived_at")) {
+        additions.push(
+          d1.prepare("ALTER TABLE workspace_items ADD COLUMN archived_at TEXT"),
         );
       }
       if (additions.length) await d1.batch(additions);

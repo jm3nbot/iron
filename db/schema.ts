@@ -13,6 +13,7 @@ export const workspaceItems = sqliteTable("workspace_items", {
   dueDate: text("due_date"),
   completed: integer("completed", { mode: "boolean" }).notNull().default(false),
   archived: integer("archived", { mode: "boolean" }).notNull().default(false),
+  archivedAt: text("archived_at"),
   position: integer("position").notNull().default(0),
   indent: integer("indent").notNull().default(0),
   bold: integer("bold", { mode: "boolean" }).notNull().default(false),
