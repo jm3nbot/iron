@@ -20,8 +20,8 @@ let schemaReady: Promise<void> | null = null;
 export function ensureWorkspaceSchema() {
   if (!schemaReady) {
     const d1 = getD1();
-    schemaReady = d1
-      .batch([
+    schemaReady = (async () => {
+      await d1.batch([
         d1.prepare(`
           CREATE TABLE IF NOT EXISTS workspace_items (
             id TEXT PRIMARY KEY NOT NULL,
@@ -29,6 +29,8 @@ export function ensureWorkspaceSchema() {
             section TEXT NOT NULL,
             group_name TEXT NOT NULL DEFAULT '',
             url TEXT,
+            links TEXT NOT NULL DEFAULT '[]',
+            note TEXT NOT NULL DEFAULT '',
             priority TEXT NOT NULL DEFAULT 'none',
             due_date TEXT,
             completed INTEGER NOT NULL DEFAULT 0,
@@ -43,8 +45,25 @@ export function ensureWorkspaceSchema() {
         d1.prepare(
           "CREATE INDEX IF NOT EXISTS workspace_items_section_position_idx ON workspace_items (section, group_name, position)",
         ),
-      ])
-      .then(() => undefined);
+      ]);
+
+      const result = await d1.prepare("PRAGMA table_info(workspace_items)").all();
+      const columns = new Set(
+        (result.results as Array<{ name?: string }>).map((column) => column.name),
+      );
+      const additions = [];
+      if (!columns.has("links")) {
+        additions.push(
+          d1.prepare("ALTER TABLE workspace_items ADD COLUMN links TEXT NOT NULL DEFAULT '[]'"),
+        );
+      }
+      if (!columns.has("note")) {
+        additions.push(
+          d1.prepare("ALTER TABLE workspace_items ADD COLUMN note TEXT NOT NULL DEFAULT ''"),
+        );
+      }
+      if (additions.length) await d1.batch(additions);
+    })();
   }
   return schemaReady;
 }

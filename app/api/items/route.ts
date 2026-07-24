@@ -83,6 +83,29 @@ function isPriority(value: unknown): value is Priority {
   );
 }
 
+function cleanLinks(value: unknown, legacyUrl?: string | null) {
+  const links = Array.isArray(value)
+    ? value.filter((link): link is string => typeof link === "string")
+    : typeof value === "string"
+      ? (() => {
+          try {
+            const parsed = JSON.parse(value);
+            return Array.isArray(parsed)
+              ? parsed.filter((link): link is string => typeof link === "string")
+              : [];
+          } catch {
+            return [];
+          }
+        })()
+      : [];
+  if (legacyUrl) links.push(legacyUrl);
+  return [...new Set(links.map((link) => link.trim()).filter(Boolean))];
+}
+
+function toPublicItem<T extends { links: string; url: string | null }>(item: T) {
+  return { ...item, links: cleanLinks(item.links, item.url) };
+}
+
 async function seedIfEmpty() {
   const db = getDb();
   const existing = await db.select({ id: workspaceItems.id }).from(workspaceItems).limit(1);
@@ -95,6 +118,8 @@ async function seedIfEmpty() {
       section: item.section,
       groupName: item.groupName ?? "",
       url: item.url ?? null,
+      links: JSON.stringify(item.url ? [item.url] : []),
+      note: "",
       priority: item.priority ?? "none",
       dueDate: null,
       completed: false,
@@ -129,7 +154,7 @@ export async function GET() {
     await ensureWorkspaceSchema();
     await retireRemovedContent();
     await seedIfEmpty();
-    const items = await getDb()
+    const rows = await getDb()
       .select()
       .from(workspaceItems)
       .orderBy(
@@ -137,7 +162,7 @@ export async function GET() {
         asc(workspaceItems.groupName),
         asc(workspaceItems.position),
       );
-    return Response.json({ items });
+    return Response.json({ items: rows.map(toPublicItem) });
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "Could not load the workspace." },
@@ -173,24 +198,31 @@ export async function POST(request: Request) {
       .limit(1);
 
     const timestamp = new Date().toISOString();
+    const legacyUrl = typeof payload.url === "string" ? payload.url : null;
+    const links = cleanLinks(payload.links, legacyUrl);
     const item = {
       id: crypto.randomUUID(),
       content,
       section,
       groupName,
-      url: typeof payload.url === "string" ? payload.url : null,
+      url: null,
+      links: JSON.stringify(links),
+      note: typeof payload.note === "string" ? payload.note.trim() : "",
       priority: isPriority(payload.priority) ? payload.priority : "none",
       dueDate: typeof payload.dueDate === "string" ? payload.dueDate : null,
       completed: false,
       archived: false,
       position: (last?.position ?? -1) + 1,
-      indent: 0,
+      indent:
+        typeof payload.indent === "number"
+          ? Math.max(0, Math.min(3, Math.round(payload.indent)))
+          : 0,
       bold: Boolean(payload.bold),
       createdAt: timestamp,
       updatedAt: timestamp,
     };
     await db.insert(workspaceItems).values(item);
-    return Response.json({ item }, { status: 201 });
+    return Response.json({ item: toPublicItem(item) }, { status: 201 });
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "Could not create the item." },
@@ -215,6 +247,8 @@ export async function PATCH(request: Request) {
     if (isSection(payload.section)) changes.section = payload.section;
     if (typeof payload.groupName === "string") changes.groupName = payload.groupName.trim();
     if (payload.url === null || typeof payload.url === "string") changes.url = payload.url;
+    if (Array.isArray(payload.links)) changes.links = JSON.stringify(cleanLinks(payload.links));
+    if (typeof payload.note === "string") changes.note = payload.note;
     if (isPriority(payload.priority)) changes.priority = payload.priority;
     if (payload.dueDate === null || typeof payload.dueDate === "string") changes.dueDate = payload.dueDate;
     if (typeof payload.completed === "boolean") changes.completed = payload.completed;
@@ -232,7 +266,7 @@ export async function PATCH(request: Request) {
     if (!item) {
       return Response.json({ error: "Item not found." }, { status: 404 });
     }
-    return Response.json({ item });
+    return Response.json({ item: toPublicItem(item) });
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "Could not save the change." },

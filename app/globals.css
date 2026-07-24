@@ -579,6 +579,7 @@ select:focus-visible {
   border-color: #d5d0c5;
   box-shadow: -3px 0 0 rgba(166,95,56,.18);
   transform: translateX(2px);
+  z-index: 4;
 }
 
 .drag-handle,
@@ -622,6 +623,19 @@ select:focus-visible {
   background: var(--success);
 }
 
+.sub-point .check {
+  width: 8px;
+  height: 8px;
+  margin: 8px 4px 0;
+  border: 0;
+  background: var(--steel-light);
+  font-size: 0;
+}
+
+.sub-point.completed .check {
+  background: var(--success);
+}
+
 .item-main {
   min-width: 0;
 }
@@ -654,7 +668,30 @@ select:focus-visible {
   font-weight: 700;
 }
 
-.item-copy a {
+.item-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 4px;
+}
+
+.link-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--iron);
+  border-radius: 10px;
+  background: rgba(255,255,255,.42);
+  transition: border-color 130ms ease, transform 130ms ease, box-shadow 130ms ease;
+}
+
+.link-chip:hover {
+  border-color: var(--steel-light);
+  box-shadow: 0 3px 10px rgba(36,34,30,.05);
+  transform: translateY(-1px);
+}
+
+.link-chip a {
+  padding: 3px 2px 3px 7px;
   color: var(--copper-light);
   font: 8px/1 var(--sans);
   letter-spacing: .03em;
@@ -663,14 +700,37 @@ select:focus-visible {
   transition: color 130ms ease, transform 130ms ease;
 }
 
-.item-copy a:hover {
+.link-chip a:hover {
   color: var(--copper);
-  transform: translateY(-1px);
 }
 
-.item-link span {
+.link-chip a span {
   margin-left: 2px;
   font-size: 10px;
+}
+
+.link-chip button {
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--paper-faint);
+  cursor: pointer;
+  font-size: 11px;
+  opacity: 0;
+  transition: color 130ms ease, opacity 130ms ease;
+}
+
+.link-chip:hover button,
+.link-chip:focus-within button {
+  opacity: 1;
+}
+
+.link-chip button:hover {
+  color: var(--danger);
 }
 
 .completed .item-copy input {
@@ -768,32 +828,91 @@ select:focus-visible {
   letter-spacing: .05em;
 }
 
+.item-note {
+  position: relative;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 22px;
+  align-items: start;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 8px 8px 10px;
+  border-left: 2px solid rgba(166,95,56,.35);
+  background: rgba(166,95,56,.045);
+  animation: note-in 150ms ease both;
+}
+
+.item-note > span {
+  padding-top: 3px;
+  color: var(--copper-light);
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+
+.item-note textarea {
+  width: 100%;
+  min-height: 38px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--paper-muted);
+  outline: none;
+  resize: vertical;
+  font: italic 12px/1.45 var(--serif);
+}
+
+.item-note textarea::placeholder {
+  color: #a19a8e;
+}
+
+.item-note > button {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--paper-faint);
+  cursor: pointer;
+}
+
 .line-tools {
+  position: absolute;
+  right: 3px;
+  top: calc(100% - 5px);
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding-top: 1px;
+  gap: 3px;
+  padding: 5px;
+  border: 1px solid var(--steel);
+  border-radius: 4px;
+  background: rgba(251,250,246,.98);
+  box-shadow: 0 10px 26px rgba(36,34,30,.12);
   opacity: 0;
-  transform: translateX(5px);
+  pointer-events: none;
+  transform: translateY(-4px);
   transition: opacity 120ms ease, transform 120ms ease;
+  z-index: 8;
 }
 
 .item-line:hover .line-tools,
 .item-line:focus-within .line-tools {
   opacity: 1;
-  transform: translateX(0);
+  pointer-events: auto;
+  transform: translateY(0);
 }
 
 .line-tools button,
 .line-tools select {
-  height: 23px;
-  min-width: 23px;
-  padding: 0 5px;
+  height: 32px;
+  min-width: 32px;
+  padding: 0 7px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--paper-faint);
   cursor: pointer;
-  font-size: 9px;
+  font-size: 12px;
+  transition: border-color 120ms ease, color 120ms ease, transform 120ms ease, background 120ms ease;
 }
 
 .line-tools button:hover,
@@ -810,8 +929,23 @@ select:focus-visible {
 }
 
 .line-tools select {
-  width: 25px;
-  color: transparent;
+  width: auto;
+  min-width: 82px;
+  max-width: 100px;
+  padding-inline: 8px 22px;
+  color: var(--paper-muted);
+  font-size: 10px;
+}
+
+@keyframes note-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .inline-add {
@@ -1101,13 +1235,22 @@ select:focus-visible {
   }
 
   .line-tools {
+    position: static;
     opacity: 1;
+    padding: 4px 0 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    pointer-events: auto;
     transform: none;
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
-  .line-tools button:nth-of-type(3),
-  .line-tools button:nth-of-type(4) {
-    display: none;
+  .line-tools button,
+  .line-tools select {
+    height: 30px;
+    min-width: 30px;
   }
 }
 

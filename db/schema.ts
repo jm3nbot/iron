@@ -6,6 +6,8 @@ export const workspaceItems = sqliteTable("workspace_items", {
   section: text("section").notNull(),
   groupName: text("group_name").notNull().default(""),
   url: text("url"),
+  links: text("links").notNull().default("[]"),
+  note: text("note").notNull().default(""),
   priority: text("priority").notNull().default("none"),
   dueDate: text("due_date"),
   completed: integer("completed", { mode: "boolean" }).notNull().default(false),

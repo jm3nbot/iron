@@ -23,6 +23,8 @@ type Item = {
   section: Section;
   groupName: string;
   url: string | null;
+  links: string[];
+  note: string;
   priority: Priority;
   dueDate: string | null;
   completed: boolean;
@@ -222,7 +224,13 @@ export default function Home() {
   );
 
   const createItem = useCallback(
-    async (content: string, section: Section, groupName = "", url: string | null = null) => {
+    async (
+      content: string,
+      section: Section,
+      groupName = "",
+      url: string | null = null,
+      indent = 0,
+    ) => {
       const clean = content.trim();
       if (!clean) return;
       const detectedUrl = url ?? findUrl(clean);
@@ -233,13 +241,15 @@ export default function Home() {
         content: displayContent,
         section,
         groupName,
-        url: detectedUrl,
+        url: null,
+        links: detectedUrl ? [detectedUrl] : [],
+        note: "",
         priority: "none",
         dueDate: null,
         completed: false,
         archived: false,
         position: items.filter((item) => item.section === section && item.groupName === groupName).length,
-        indent: 0,
+        indent,
         bold: false,
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -254,7 +264,13 @@ export default function Home() {
         const response = await fetch("/api/items", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: displayContent, section, groupName, url: detectedUrl }),
+          body: JSON.stringify({
+            content: displayContent,
+            section,
+            groupName,
+            links: detectedUrl ? [detectedUrl] : [],
+            indent,
+          }),
         });
         if (!response.ok) throw new Error("Create failed");
         const { item } = (await response.json()) as { item: Item };
@@ -563,6 +579,7 @@ export default function Home() {
                   item={item}
                   updateItem={updateItem}
                   deleteItem={deleteItem}
+                  addSubItem={() => void createItem("New sub-point", item.section, item.groupName, null, Math.min(3, item.indent + 1))}
                   onDragStart={() => setDraggingId(item.id)}
                   onDrop={() => reorder(item.id)}
                 />
@@ -593,6 +610,7 @@ export default function Home() {
                           item={item}
                           updateItem={updateItem}
                           deleteItem={deleteItem}
+                          addSubItem={() => void createItem("New sub-point", item.section, item.groupName, null, Math.min(3, item.indent + 1))}
                           onDragStart={() => setDraggingId(item.id)}
                           onDrop={() => reorder(item.id)}
                         />
@@ -651,19 +669,24 @@ function ItemLine({
   item,
   updateItem,
   deleteItem,
+  addSubItem,
   onDragStart,
   onDrop,
 }: {
   item: Item;
   updateItem: (id: string, patch: Patch) => void;
   deleteItem: (item: Item) => void;
+  addSubItem: () => void;
   onDragStart: () => void;
   onDrop: () => void;
 }) {
   const [draft, setDraft] = useState(item.content);
+  const [noteOpen, setNoteOpen] = useState(Boolean(item.note));
+  const [noteDraft, setNoteDraft] = useState(item.note ?? "");
   const state = dueState(item.dueDate);
 
   useEffect(() => setDraft(item.content), [item.content]);
+  useEffect(() => setNoteDraft(item.note ?? ""), [item.note]);
 
   const commit = () => {
     const clean = draft.trim() || "Untitled";
@@ -671,7 +694,9 @@ function ItemLine({
     const detectedUrl = findUrl(clean);
     const patch: Patch = {};
     if (clean !== item.content) patch.content = clean;
-    if (detectedUrl && detectedUrl !== item.url) patch.url = detectedUrl;
+    if (detectedUrl && !(item.links ?? []).includes(detectedUrl)) {
+      patch.links = [...(item.links ?? []), detectedUrl];
+    }
     if (Object.keys(patch).length) updateItem(item.id, patch);
   };
 
@@ -686,10 +711,27 @@ function ItemLine({
     }
   };
 
-  const changeLink = () => {
-    const value = window.prompt("Paste a link for this line", item.url ?? "");
+  const addLink = () => {
+    const value = window.prompt("Paste a link for this line", "");
     if (value === null) return;
-    updateItem(item.id, { url: value.trim() || null });
+    const link = findUrl(value.trim());
+    if (!link) {
+      window.alert("Please paste a complete http:// or https:// link.");
+      return;
+    }
+    updateItem(item.id, { links: [...new Set([...(item.links ?? []), link])] });
+  };
+
+  const removeLink = (link: string) => {
+    updateItem(item.id, {
+      links: (item.links ?? []).filter((candidate) => candidate !== link),
+      url: item.url === link ? null : item.url,
+    });
+  };
+
+  const commitNote = () => {
+    if (noteDraft !== (item.note ?? "")) updateItem(item.id, { note: noteDraft });
+    if (!noteDraft.trim()) setNoteOpen(false);
   };
 
   const nextPriority =
@@ -697,7 +739,7 @@ function ItemLine({
 
   return (
     <article
-      className={`item-line ${item.completed ? "completed" : ""}`}
+      className={`item-line ${item.completed ? "completed" : ""} ${item.indent > 0 ? "sub-point" : ""}`}
       style={{ "--indent": item.indent } as React.CSSProperties}
       draggable
       onDragStart={onDragStart}
@@ -725,12 +767,19 @@ function ItemLine({
             onBlur={commit}
             onKeyDown={onKeyDown}
           />
-          {item.url && (
-            <a className="item-link" href={item.url} target="_blank" rel="noreferrer" aria-label={`Open link for ${item.content}`}>
-              {linkLabel(item.url)} <span>↗</span>
-            </a>
-          )}
         </div>
+        {(item.links ?? []).length > 0 && (
+          <div className="item-links">
+            {(item.links ?? []).map((link) => (
+              <span className="link-chip" key={link}>
+                <a href={link} target="_blank" rel="noreferrer" aria-label={`Open ${linkLabel(link)}`}>
+                  {linkLabel(link)} <span>↗</span>
+                </a>
+                <button aria-label={`Remove ${linkLabel(link)} link`} onClick={() => removeLink(link)}>×</button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="item-meta">
           <button
             className={`priority priority-${item.priority}`}
@@ -750,10 +799,35 @@ function ItemLine({
           </label>
           {item.section !== "now" && <span className="group-tag">{item.groupName}</span>}
         </div>
+        {noteOpen && (
+          <div className="item-note">
+            <span aria-hidden="true">Note</span>
+            <textarea
+              autoFocus={!item.note}
+              aria-label={`Note for ${item.content}`}
+              placeholder="Add context, a reminder, or a thought…"
+              value={noteDraft}
+              onChange={(event) => setNoteDraft(event.target.value)}
+              onBlur={commitNote}
+            />
+            <button
+              aria-label="Close note"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                commitNote();
+                setNoteOpen(false);
+              }}
+            >
+              ×
+            </button>
+          </div>
+        )}
       </div>
       <div className="line-tools">
         <button className={item.bold ? "selected" : ""} aria-label="Toggle bold" onClick={() => updateItem(item.id, { bold: !item.bold })}>B</button>
-        <button aria-label="Edit link" onClick={changeLink}>↗</button>
+        <button aria-label="Add another link" title="Add link" onClick={addLink}>↗+</button>
+        <button className={noteOpen ? "selected" : ""} aria-label="Add note" title="Add note" onClick={() => setNoteOpen((open) => !open)}>N</button>
+        <button aria-label="Add sub-point" title="Add sub-point" onClick={addSubItem}>↳</button>
         <button aria-label="Decrease indent" disabled={item.indent === 0} onClick={() => updateItem(item.id, { indent: item.indent - 1 })}>←</button>
         <button aria-label="Increase indent" disabled={item.indent === 2} onClick={() => updateItem(item.id, { indent: item.indent + 1 })}>→</button>
         <select
