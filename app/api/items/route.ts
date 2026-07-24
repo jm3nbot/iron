@@ -4,7 +4,7 @@ import { workspaceItems } from "@/db/schema";
 
 export const dynamic = "force-dynamic";
 
-type Section = "now" | "projects" | "library";
+type Section = "now" | "projects" | "library" | "notes";
 type Priority = "none" | "high" | "medium" | "low";
 
 type SeedItem = {
@@ -89,7 +89,12 @@ const seedItems: SeedItem[] = [
 ];
 
 function isSection(value: unknown): value is Section {
-  return value === "now" || value === "projects" || value === "library";
+  return (
+    value === "now" ||
+    value === "projects" ||
+    value === "library" ||
+    value === "notes"
+  );
 }
 
 function isPriority(value: unknown): value is Priority {

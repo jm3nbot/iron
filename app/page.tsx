@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 
-type Section = "now" | "projects" | "library";
+type Section = "now" | "projects" | "library" | "notes";
 type View = Section | "archive";
 type Priority = "none" | "high" | "medium" | "low";
 type SaveStatus = "saved" | "saving" | "retry";
@@ -39,6 +39,7 @@ const views: { id: View; label: string; mark: string }[] = [
   { id: "projects", label: "Projects", mark: "02" },
   { id: "library", label: "Library", mark: "03" },
   { id: "archive", label: "Archive", mark: "04" },
+  { id: "notes", label: "Notes", mark: "05" },
 ];
 
 const priorityOrder: Priority[] = ["none", "high", "medium", "low"];
@@ -286,6 +287,7 @@ export default function Home() {
       projects: new Set(items.filter((item) => item.section === "projects" && !item.archived).map((item) => item.groupName)).size,
       library: items.filter((item) => item.section === "library" && !item.archived).length,
       archive: items.filter((item) => item.archived).length,
+      notes: items.filter((item) => item.section === "notes" && !item.archived).length,
     }),
     [items],
   );
@@ -340,17 +342,24 @@ export default function Home() {
         ? "Projects"
         : activeView === "library"
           ? "Library"
+          : activeView === "notes"
+            ? "Notes"
           : "Archive";
 
-  const viewDeck = query
-    ? `${activeItems.length} result${activeItems.length === 1 ? "" : "s"} across your whole workspace.`
-    : activeView === "now"
-      ? "Choose what deserves your attention. Everything else can wait."
-      : activeView === "projects"
-        ? "Active bodies of work, each with a clear next line."
-        : activeView === "library"
-          ? "Ideas, references, and skills worth returning to."
-          : "Out of sight, never truly lost.";
+  const quickAddFor = (view: View) => {
+    setActiveView(view);
+    setQuery("");
+    if (view === "projects") {
+      setShowNewProject(true);
+      return;
+    }
+    if (view === "archive") return;
+    void createItem(
+      view === "notes" ? "New note" : view === "library" ? "New reference" : "New item",
+      view,
+      view === "library" ? "Unsorted" : "",
+    );
+  };
 
   return (
     <main className="workspace">
@@ -365,18 +374,22 @@ export default function Home() {
 
         <nav aria-label="Workspace sections">
           {views.map((view) => (
-            <button
-              className={`nav-item ${activeView === view.id && !query ? "active" : ""}`}
-              key={view.id}
-              onClick={() => {
-                setActiveView(view.id);
-                setQuery("");
-              }}
-            >
-              <span className="nav-mark">{view.mark}</span>
-              <span>{view.label}</span>
-              <em>{counts[view.id]}</em>
-            </button>
+            <div className="nav-row" key={view.id}>
+              <button
+                className={`nav-item ${activeView === view.id && !query ? "active" : ""}`}
+                onClick={() => {
+                  setActiveView(view.id);
+                  setQuery("");
+                }}
+              >
+                <span className="nav-mark">{view.mark}</span>
+                <span>{view.label}</span>
+                <em>{counts[view.id]}</em>
+              </button>
+              {view.id !== "archive" && (
+                <button className="nav-plus" aria-label={`Add to ${view.label}`} onClick={() => quickAddFor(view.id)}>+</button>
+              )}
+            </div>
           ))}
         </nav>
 
@@ -391,7 +404,11 @@ export default function Home() {
 
       <section className="canvas">
         <header className="topbar">
-          <div className="mobile-brand">INK <span>&amp;</span> IRON</div>
+          <div className="topbar-title">
+            <strong>Ink <span>&amp;</span> Iron</strong>
+            <i>/</i>
+            <em>{viewTitle}</em>
+          </div>
           <label className="search">
             <span aria-hidden="true">⌕</span>
             <input
@@ -406,15 +423,6 @@ export default function Home() {
         </header>
 
         <div className="document">
-          <div className="masthead">
-            <div>
-              <span className="eyebrow">{query ? "Across all sections" : `Section / ${viewTitle}`}</span>
-              <h1>{viewTitle}<i>.</i></h1>
-              <p>{viewDeck}</p>
-            </div>
-            <time>{new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}</time>
-          </div>
-
           <form className="capture" onSubmit={handleCapture}>
             <span className="capture-plus">+</span>
             <input
@@ -439,7 +447,7 @@ export default function Home() {
                 <button onClick={() => void createItem("New thought", activeView as Section)}>Add a line</button>
               )}
             </div>
-          ) : query || activeView === "now" || activeView === "archive" ? (
+          ) : query || activeView === "now" || activeView === "archive" || activeView === "notes" ? (
             <div className="line-list">
               <div className="list-rule">
                 <span>{query ? "Results" : activeView === "archive" ? "Archived lines" : "Current queue"}</span>
@@ -455,8 +463,8 @@ export default function Home() {
                   onDrop={() => reorder(item.id)}
                 />
               ))}
-              {!query && activeView === "now" && (
-                <InlineAdd onAdd={(value) => void createItem(value, "now")} />
+              {!query && (activeView === "now" || activeView === "notes") && (
+                <InlineAdd onAdd={(value) => void createItem(value, activeView)} />
               )}
             </div>
           ) : (
@@ -614,22 +622,26 @@ function ItemLine({
           )}
         </div>
         <div className="item-meta">
-          <button
-            className={`priority priority-${item.priority}`}
-            title={`Priority: ${item.priority}. Click for ${nextPriority}.`}
-            onClick={() => updateItem(item.id, { priority: nextPriority })}
-          >
-            {item.priority === "none" ? "No priority" : item.priority}
-          </button>
-          <label className={`date-field ${state?.tone ?? ""}`}>
-            <span>{state?.label ?? "Set date"}</span>
-            <input
-              aria-label={`Due date for ${item.content}`}
-              type="date"
-              value={item.dueDate ?? ""}
-              onChange={(event) => updateItem(item.id, { dueDate: event.target.value || null })}
-            />
-          </label>
+          {item.section !== "notes" && (
+            <>
+              <button
+                className={`priority priority-${item.priority}`}
+                title={`Priority: ${item.priority}. Click for ${nextPriority}.`}
+                onClick={() => updateItem(item.id, { priority: nextPriority })}
+              >
+                {item.priority === "none" ? "No priority" : item.priority}
+              </button>
+              <label className={`date-field ${state?.tone ?? ""}`}>
+                <span>{state?.label ?? "Set date"}</span>
+                <input
+                  aria-label={`Due date for ${item.content}`}
+                  type="date"
+                  value={item.dueDate ?? ""}
+                  onChange={(event) => updateItem(item.id, { dueDate: event.target.value || null })}
+                />
+              </label>
+            </>
+          )}
           {item.section !== "now" && <span className="group-tag">{item.groupName}</span>}
         </div>
       </div>
@@ -646,6 +658,7 @@ function ItemLine({
           <option value="now">Now</option>
           <option value="projects">Projects</option>
           <option value="library">Library</option>
+          <option value="notes">Notes</option>
         </select>
         <button aria-label={item.archived ? "Restore from archive" : "Archive"} onClick={() => updateItem(item.id, { archived: !item.archived })}>
           {item.archived ? "↺" : "□"}
