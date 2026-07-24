@@ -1,0 +1,1 @@
+ALTER TABLE `workspace_items` ADD `parent_id` text;

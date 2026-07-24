@@ -120,6 +120,7 @@ async function seedIfEmpty() {
       url: item.url ?? null,
       links: JSON.stringify(item.url ? [item.url] : []),
       note: "",
+      parentId: null,
       priority: item.priority ?? "none",
       dueDate: null,
       completed: false,
@@ -208,11 +209,15 @@ export async function POST(request: Request) {
       url: null,
       links: JSON.stringify(links),
       note: typeof payload.note === "string" ? payload.note.trim() : "",
+      parentId: typeof payload.parentId === "string" ? payload.parentId : null,
       priority: isPriority(payload.priority) ? payload.priority : "none",
       dueDate: typeof payload.dueDate === "string" ? payload.dueDate : null,
       completed: false,
       archived: false,
-      position: (last?.position ?? -1) + 1,
+      position:
+        typeof payload.position === "number"
+          ? Math.max(0, Math.round(payload.position))
+          : (last?.position ?? -1) + 1,
       indent:
         typeof payload.indent === "number"
           ? Math.max(0, Math.min(3, Math.round(payload.indent)))
@@ -249,6 +254,7 @@ export async function PATCH(request: Request) {
     if (payload.url === null || typeof payload.url === "string") changes.url = payload.url;
     if (Array.isArray(payload.links)) changes.links = JSON.stringify(cleanLinks(payload.links));
     if (typeof payload.note === "string") changes.note = payload.note;
+    if (payload.parentId === null || typeof payload.parentId === "string") changes.parentId = payload.parentId;
     if (isPriority(payload.priority)) changes.priority = payload.priority;
     if (payload.dueDate === null || typeof payload.dueDate === "string") changes.dueDate = payload.dueDate;
     if (typeof payload.completed === "boolean") changes.completed = payload.completed;

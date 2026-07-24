@@ -15,6 +15,13 @@
       "when": 1784888665170,
       "tag": "0001_even_stark_industries",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784889081856,
+      "tag": "0002_fixed_adam_warlock",
+      "breakpoints": true
     }
   ]
 }

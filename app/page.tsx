@@ -3,6 +3,7 @@
 import {
   FormEvent,
   KeyboardEvent,
+  MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
@@ -25,6 +26,7 @@ type Item = {
   url: string | null;
   links: string[];
   note: string;
+  parentId: string | null;
   priority: Priority;
   dueDate: string | null;
   completed: boolean;
@@ -230,6 +232,8 @@ export default function Home() {
       groupName = "",
       url: string | null = null,
       indent = 0,
+      positionOverride: number | null = null,
+      parentId: string | null = null,
     ) => {
       const clean = content.trim();
       if (!clean) return;
@@ -244,11 +248,14 @@ export default function Home() {
         url: null,
         links: detectedUrl ? [detectedUrl] : [],
         note: "",
+        parentId,
         priority: "none",
         dueDate: null,
         completed: false,
         archived: false,
-        position: items.filter((item) => item.section === section && item.groupName === groupName).length,
+        position:
+          positionOverride ??
+          items.filter((item) => item.section === section && item.groupName === groupName).length,
         indent,
         bold: false,
         createdAt: timestamp,
@@ -270,6 +277,8 @@ export default function Home() {
             groupName,
             links: detectedUrl ? [detectedUrl] : [],
             indent,
+            position: positionOverride,
+            parentId,
           }),
         });
         if (!response.ok) throw new Error("Create failed");
@@ -285,6 +294,61 @@ export default function Home() {
       }
     },
     [cacheItems, items, markSaved],
+  );
+
+  const createSubItem = useCallback(
+    (parent: Item) => {
+      setSortMode("manual");
+      const siblings = items
+        .filter(
+          (item) =>
+            item.section === parent.section &&
+            item.groupName === parent.groupName &&
+            item.archived === parent.archived,
+        )
+        .sort(sortItems);
+      const parentIndex = siblings.findIndex((item) => item.id === parent.id);
+      if (parentIndex < 0) return;
+
+      let insertionIndex = parentIndex + 1;
+      while (
+        insertionIndex < siblings.length &&
+        siblings[insertionIndex].indent > parent.indent
+      ) {
+        insertionIndex += 1;
+      }
+
+      const positionUpdates = new Map<string, number>();
+      siblings.forEach((item, index) => {
+        const position = index >= insertionIndex ? index + 1 : index;
+        if (item.position !== position) positionUpdates.set(item.id, position);
+      });
+      if (positionUpdates.size) {
+        setItems((current) => {
+          const next = current.map((item) =>
+            positionUpdates.has(item.id)
+              ? { ...item, position: positionUpdates.get(item.id)! }
+              : item,
+          );
+          cacheItems(next);
+          return next;
+        });
+        for (const [id, position] of positionUpdates) {
+          void sendPatch(id, { position });
+        }
+      }
+
+      void createItem(
+        "New sub-point",
+        parent.section,
+        parent.groupName,
+        null,
+        Math.min(3, parent.indent + 1),
+        insertionIndex,
+        parent.id,
+      );
+    },
+    [cacheItems, createItem, items, sendPatch],
   );
 
   const handleCapture = (event: FormEvent) => {
@@ -579,7 +643,7 @@ export default function Home() {
                   item={item}
                   updateItem={updateItem}
                   deleteItem={deleteItem}
-                  addSubItem={() => void createItem("New sub-point", item.section, item.groupName, null, Math.min(3, item.indent + 1))}
+                  addSubItem={() => createSubItem(item)}
                   onDragStart={() => setDraggingId(item.id)}
                   onDrop={() => reorder(item.id)}
                 />
@@ -610,7 +674,7 @@ export default function Home() {
                           item={item}
                           updateItem={updateItem}
                           deleteItem={deleteItem}
-                          addSubItem={() => void createItem("New sub-point", item.section, item.groupName, null, Math.min(3, item.indent + 1))}
+                          addSubItem={() => createSubItem(item)}
                           onDragStart={() => setDraggingId(item.id)}
                           onDrop={() => reorder(item.id)}
                         />
@@ -683,10 +747,35 @@ function ItemLine({
   const [draft, setDraft] = useState(item.content);
   const [noteOpen, setNoteOpen] = useState(Boolean(item.note));
   const [noteDraft, setNoteDraft] = useState(item.note ?? "");
+  const [hovered, setHovered] = useState(false);
   const state = dueState(item.dueDate);
 
   useEffect(() => setDraft(item.content), [item.content]);
   useEffect(() => setNoteDraft(item.note ?? ""), [item.note]);
+
+  useEffect(() => {
+    if (!hovered) return;
+    const shortcut = (event: globalThis.KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.matches("input, textarea, select, button, a") ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        setNoteOpen(true);
+      }
+      if (event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        updateItem(item.id, { bold: !item.bold });
+      }
+    };
+    window.addEventListener("keydown", shortcut);
+    return () => window.removeEventListener("keydown", shortcut);
+  }, [hovered, item.bold, item.id, updateItem]);
 
   const commit = () => {
     const clean = draft.trim() || "Untitled";
@@ -737,11 +826,25 @@ function ItemLine({
   const nextPriority =
     priorityOrder[(priorityOrder.indexOf(item.priority) + 1) % priorityOrder.length];
 
+  const openNoteOnDoubleClick = (event: ReactMouseEvent<HTMLElement>) => {
+    const target = event.target;
+    if (
+      target instanceof HTMLElement &&
+      target.closest("input, textarea, select, button, a")
+    ) {
+      return;
+    }
+    setNoteOpen(true);
+  };
+
   return (
     <article
       className={`item-line ${item.completed ? "completed" : ""} ${item.indent > 0 ? "sub-point" : ""}`}
       style={{ "--indent": item.indent } as React.CSSProperties}
       draggable
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onDoubleClick={openNoteOnDoubleClick}
       onDragStart={onDragStart}
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {

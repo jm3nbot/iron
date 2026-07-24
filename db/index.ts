@@ -31,6 +31,7 @@ export function ensureWorkspaceSchema() {
             url TEXT,
             links TEXT NOT NULL DEFAULT '[]',
             note TEXT NOT NULL DEFAULT '',
+            parent_id TEXT,
             priority TEXT NOT NULL DEFAULT 'none',
             due_date TEXT,
             completed INTEGER NOT NULL DEFAULT 0,
@@ -60,6 +61,11 @@ export function ensureWorkspaceSchema() {
       if (!columns.has("note")) {
         additions.push(
           d1.prepare("ALTER TABLE workspace_items ADD COLUMN note TEXT NOT NULL DEFAULT ''"),
+        );
+      }
+      if (!columns.has("parent_id")) {
+        additions.push(
+          d1.prepare("ALTER TABLE workspace_items ADD COLUMN parent_id TEXT"),
         );
       }
       if (additions.length) await d1.batch(additions);
