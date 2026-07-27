@@ -55,8 +55,15 @@ const views: { id: View; label: string; mark: string }[] = [
 ];
 
 const priorityOrder: Priority[] = ["none", "high", "medium", "low"];
+const sortModeOrder: SortMode[] = ["manual", "priority", "recent"];
+const sortModeLabels: Record<SortMode, string> = {
+  manual: "Manual",
+  priority: "Priority",
+  recent: "Recent",
+};
 const CACHE_KEY = "ink-and-iron-workspace-v1";
 const QUEUE_KEY = "ink-and-iron-pending-v1";
+const SORT_KEY = "ink-and-iron-sort-mode";
 const capturePhrases = [
   "Capture a thought…",
   "Paste a link…",
@@ -103,10 +110,9 @@ function sortItems(a: Item, b: Item) {
   return a.position - b.position || a.createdAt.localeCompare(b.createdAt);
 }
 
-function sortVisibleItems(items: Item[], mode: SortMode) {
-  const copy = [...items];
+function compareVisibleItems(a: Item, b: Item, mode: SortMode) {
   if (mode === "recent") {
-    return copy.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return b.updatedAt.localeCompare(a.updatedAt) || sortItems(a, b);
   }
   if (mode === "priority") {
     const weight: Record<Priority, number> = {
@@ -115,9 +121,49 @@ function sortVisibleItems(items: Item[], mode: SortMode) {
       low: 2,
       none: 3,
     };
-    return copy.sort((a, b) => weight[a.priority] - weight[b.priority] || sortItems(a, b));
+    return weight[a.priority] - weight[b.priority] || sortItems(a, b);
   }
-  return copy.sort(sortItems);
+  return sortItems(a, b);
+}
+
+function sortVisibleItems(items: Item[], mode: SortMode) {
+  const included = new Map(items.map((item) => [item.id, item]));
+  const children = new Map<string, Item[]>();
+  const roots: Item[] = [];
+
+  for (const item of items) {
+    const parent = item.parentId ? included.get(item.parentId) : null;
+    const hasVisibleParent =
+      parent &&
+      parent.section === item.section &&
+      parent.groupName === item.groupName &&
+      parent.archived === item.archived;
+
+    if (hasVisibleParent) {
+      children.set(parent.id, [...(children.get(parent.id) ?? []), item]);
+    } else {
+      roots.push(item);
+    }
+  }
+
+  const result: Item[] = [];
+  const visited = new Set<string>();
+  const appendBranch = (item: Item) => {
+    if (visited.has(item.id)) return;
+    visited.add(item.id);
+    result.push(item);
+    const nested = [...(children.get(item.id) ?? [])].sort((a, b) =>
+      compareVisibleItems(a, b, mode),
+    );
+    nested.forEach(appendBranch);
+  };
+
+  roots.sort((a, b) => compareVisibleItems(a, b, mode)).forEach(appendBranch);
+  items
+    .filter((item) => !visited.has(item.id))
+    .sort((a, b) => compareVisibleItems(a, b, mode))
+    .forEach(appendBranch);
+  return result;
 }
 
 export default function Home() {
@@ -222,8 +268,12 @@ export default function Home() {
   useEffect(() => {
     const storedWidth = Number(localStorage.getItem("ink-and-iron-sidebar-width"));
     const storedCollapsed = localStorage.getItem("ink-and-iron-sidebar-collapsed");
+    const storedSortMode = localStorage.getItem(SORT_KEY) as SortMode | null;
     if (storedWidth >= 190 && storedWidth <= 340) setSidebarWidth(storedWidth);
     setSidebarCollapsed(storedCollapsed === "true");
+    if (storedSortMode && sortModeOrder.includes(storedSortMode)) {
+      setSortMode(storedSortMode);
+    }
   }, []);
 
   useEffect(() => {
@@ -350,7 +400,6 @@ export default function Home() {
 
   const createSubItem = useCallback(
     (parent: Item) => {
-      setSortMode("manual");
       const siblings = items
         .filter(
           (item) =>
@@ -402,6 +451,13 @@ export default function Home() {
     },
     [cacheItems, createItem, items, sendPatch],
   );
+
+  const cycleSortMode = () => {
+    const next =
+      sortModeOrder[(sortModeOrder.indexOf(sortMode) + 1) % sortModeOrder.length];
+    setSortMode(next);
+    localStorage.setItem(SORT_KEY, next);
+  };
 
   const handleCapture = (event: FormEvent) => {
     event.preventDefault();
@@ -735,14 +791,22 @@ export default function Home() {
             <em>{viewTitle}</em>
           </div>
           <div className="topbar-tools">
-            <label className="sort-control">
+            <button
+              type="button"
+              className={`sort-control sort-${sortMode}`}
+              aria-label={`Filter by ${sortModeLabels[sortMode]}. Click to switch to ${
+                sortModeLabels[
+                  sortModeOrder[
+                    (sortModeOrder.indexOf(sortMode) + 1) % sortModeOrder.length
+                  ]
+                ]
+              }.`}
+              onClick={cycleSortMode}
+            >
               <span>Filter by</span>
-              <select value={sortMode} onChange={(event) => setSortMode(event.target.value as SortMode)}>
-                <option value="manual">Manual order</option>
-                <option value="priority">Priority</option>
-                <option value="recent">Recent</option>
-              </select>
-            </label>
+              <strong>{sortModeLabels[sortMode]}</strong>
+              <i aria-hidden="true">↻</i>
+            </button>
             <label className="search">
               <span aria-hidden="true">⌕</span>
               <input
@@ -1192,7 +1256,9 @@ function ItemLine({
       </div>
       <div className="line-tools">
         <button className={item.bold ? "selected" : ""} aria-label="Toggle bold" onClick={() => updateItem(item.id, { bold: !item.bold })}>B</button>
-        <button aria-label="Add another link" title="Add link" onClick={addLink}>↗+</button>
+        <button className="link-tool" aria-label="Add another link" title="Add link" onClick={addLink}>
+          <span aria-hidden="true">📎</span>
+        </button>
         <button className={noteOpen ? "selected" : ""} aria-label="Add note" title="Add note" onClick={() => setNoteOpen((open) => !open)}>N</button>
         <button aria-label="Add sub-point" title="Add sub-point" onClick={addSubItem}>↳</button>
         <button aria-label="Decrease indent" disabled={item.indent === 0} onClick={() => updateItem(item.id, { indent: item.indent - 1 })}>←</button>

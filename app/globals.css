@@ -385,31 +385,55 @@ select:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 5px 7px 5px 8px;
+  border: 1px solid var(--iron);
+  border-radius: 999px;
+  background: rgba(251,250,246,.72);
   color: var(--paper-faint);
+  cursor: pointer;
   font-size: 8px;
   font-weight: 650;
   letter-spacing: .1em;
   text-transform: uppercase;
   white-space: nowrap;
+  transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
 }
 
-.sort-control select {
-  padding: 6px 22px 6px 8px;
-  border: 1px solid var(--iron);
-  border-radius: 3px;
-  background: var(--ink-raised);
+.sort-control strong {
   color: var(--paper-muted);
-  cursor: pointer;
   font-size: 9px;
+  font-weight: 650;
   letter-spacing: .03em;
   text-transform: none;
-  transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
 }
 
-.sort-control select:hover {
+.sort-control i {
+  color: var(--steel-light);
+  font-size: 10px;
+  font-style: normal;
+  transition: color 140ms ease, transform 180ms ease;
+}
+
+.sort-control:hover {
   border-color: var(--steel-light);
+  background: var(--ink-raised);
   box-shadow: 0 3px 12px rgba(36,34,30,.06);
   transform: translateY(-1px);
+}
+
+.sort-control:hover i {
+  color: var(--copper-light);
+  transform: rotate(55deg);
+}
+
+.sort-control.sort-priority {
+  border-color: rgba(166,95,56,.34);
+  background: rgba(166,95,56,.055);
+}
+
+.sort-control.sort-recent {
+  border-color: rgba(99,123,87,.32);
+  background: rgba(99,123,87,.045);
 }
 
 .topbar-title {
@@ -1112,6 +1136,20 @@ select:focus-visible {
 .line-tools button:disabled {
   opacity: .25;
   cursor: default;
+}
+
+.line-tools .link-tool span {
+  display: inline-block;
+  filter: grayscale(1);
+  font-size: 13px;
+  line-height: 1;
+  transform: rotate(-12deg);
+  transition: filter 120ms ease, transform 120ms ease;
+}
+
+.line-tools .link-tool:hover span {
+  filter: grayscale(.45);
+  transform: rotate(0deg) scale(1.08);
 }
 
 .line-tools select {
