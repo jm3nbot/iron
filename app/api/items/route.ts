@@ -247,9 +247,11 @@ export async function PATCH(request: Request) {
       return Response.json({ error: "Item id is required." }, { status: 400 });
     }
 
-    const changes: Record<string, string | number | boolean | null> = {
-      updatedAt: new Date().toISOString(),
-    };
+    const changes: Record<string, string | number | boolean | null> = {};
+    const touchesContent = Object.keys(payload).some(
+      (key) => key !== "id" && key !== "position",
+    );
+    if (touchesContent) changes.updatedAt = new Date().toISOString();
     if (typeof payload.content === "string") changes.content = payload.content.trim() || "Untitled";
     if (isSection(payload.section)) changes.section = payload.section;
     if (typeof payload.groupName === "string") changes.groupName = payload.groupName.trim();
