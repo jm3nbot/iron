@@ -11,6 +11,8 @@ import {
   useRef,
   useState,
 } from "react";
+import type { Session } from "@supabase/supabase-js";
+import { supabase } from "@/lib/supabase";
 
 type Section = "now" | "projects" | "library";
 type View = Section | "archive";
@@ -167,6 +169,10 @@ function sortVisibleItems(items: Item[], mode: SortMode) {
 }
 
 export default function Home() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [username, setUsername] = useState("");
+  const [accountOpen, setAccountOpen] = useState(false);
   const [items, setItems] = useState<Item[]>([]);
   const [activeView, setActiveView] = useState<View>("now");
   const [query, setQuery] = useState("");
@@ -193,70 +199,126 @@ export default function Home() {
   const captureRef = useRef<HTMLInputElement | null>(null);
   const marqueeCleanupRef = useRef<(() => void) | null>(null);
 
+  const userCacheKey = session ? `${CACHE_KEY}:${session.user.id}` : null;
+  const userQueueKey = session ? `${QUEUE_KEY}:${session.user.id}` : null;
+
   const cacheItems = useCallback((next: Item[]) => {
-    localStorage.setItem(CACHE_KEY, JSON.stringify(next));
-  }, []);
+    if (userCacheKey) localStorage.setItem(userCacheKey, JSON.stringify(next));
+  }, [userCacheKey]);
+
+  const authenticatedFetch = useCallback(
+    async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const {
+        data: { session: currentSession },
+      } = await supabase.auth.getSession();
+      if (!currentSession) throw new Error("Sign in to continue.");
+      const headers = new Headers(init.headers);
+      headers.set("Authorization", `Bearer ${currentSession.access_token}`);
+      return fetch(input, { ...init, headers });
+    },
+    [],
+  );
 
   const markSaved = useCallback(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => setSaveStatus("saved"), 350);
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!active) return;
+      setSession(data.session);
+      setAuthReady(true);
+    });
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setAuthReady(true);
+      if (!nextSession) {
+        setItems([]);
+        setUsername("");
+        setAccountOpen(false);
+      }
+    });
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!session) return;
+    let active = true;
+    void supabase
+      .from("profiles")
+      .select("username")
+      .eq("id", session.user.id)
+      .single()
+      .then(({ data }) => {
+        if (active) {
+          setUsername(data?.username ?? session.user.email?.split("@")[0] ?? "Account");
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [session]);
+
   const sendPatch = useCallback(
     async (id: string, patch: Patch) => {
+      if (!userQueueKey) return;
       setSaveStatus("saving");
       const body = { id, ...patch };
       try {
-        const response = await fetch("/api/items", {
+        const response = await authenticatedFetch("/api/items", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
         if (!response.ok) throw new Error("Save failed");
-        const pending = JSON.parse(localStorage.getItem(QUEUE_KEY) ?? "{}") as Record<string, Patch>;
+        const pending = JSON.parse(localStorage.getItem(userQueueKey) ?? "{}") as Record<string, Patch>;
         delete pending[id];
-        localStorage.setItem(QUEUE_KEY, JSON.stringify(pending));
+        localStorage.setItem(userQueueKey, JSON.stringify(pending));
         markSaved();
       } catch {
-        const pending = JSON.parse(localStorage.getItem(QUEUE_KEY) ?? "{}") as Record<string, Patch>;
+        const pending = JSON.parse(localStorage.getItem(userQueueKey) ?? "{}") as Record<string, Patch>;
         pending[id] = { ...(pending[id] ?? {}), ...patch };
-        localStorage.setItem(QUEUE_KEY, JSON.stringify(pending));
+        localStorage.setItem(userQueueKey, JSON.stringify(pending));
         setSaveStatus("retry");
       }
     },
-    [markSaved],
+    [authenticatedFetch, markSaved, userQueueKey],
   );
 
   const flushPending = useCallback(async () => {
-    const pending = JSON.parse(localStorage.getItem(QUEUE_KEY) ?? "{}") as Record<string, Patch>;
+    if (!userQueueKey) return;
+    const pending = JSON.parse(localStorage.getItem(userQueueKey) ?? "{}") as Record<string, Patch>;
     const entries = Object.entries(pending);
     if (!entries.length) return;
     for (const [id, patch] of entries) await sendPatch(id, patch);
-  }, [sendPatch]);
+  }, [sendPatch, userQueueKey]);
 
   useEffect(() => {
+    if (!authReady || !session || !userCacheKey) {
+      return;
+    }
+    const cacheKey = userCacheKey;
     let cancelled = false;
     async function load() {
       try {
-        const response = await fetch("/api/items", { cache: "no-store" });
+        const response = await authenticatedFetch("/api/items", { cache: "no-store" });
         if (!response.ok) throw new Error("Load failed");
-        const data = (await response.json()) as {
-          items: Item[];
-          storageMode?: "hosted" | "browser";
-        };
+        const data = (await response.json()) as { items: Item[] };
         if (!cancelled) {
-          const cached = localStorage.getItem(CACHE_KEY);
-          const nextItems =
-            data.storageMode === "browser" && cached
-              ? (JSON.parse(cached) as Item[])
-              : data.items;
-          setItems(nextItems);
-          cacheItems(nextItems);
+          setItems(data.items);
+          cacheItems(data.items);
           setSaveStatus("saved");
           void flushPending();
         }
       } catch {
-        const cached = localStorage.getItem(CACHE_KEY);
+        const cached = localStorage.getItem(cacheKey);
         if (cached && !cancelled) {
           setItems(JSON.parse(cached) as Item[]);
           setSaveStatus("retry");
@@ -271,7 +333,43 @@ export default function Home() {
       cancelled = true;
       window.removeEventListener("online", flushPending);
     };
-  }, [cacheItems, flushPending]);
+  }, [
+    authReady,
+    authenticatedFetch,
+    cacheItems,
+    flushPending,
+    session,
+    userCacheKey,
+  ]);
+
+  useEffect(() => {
+    if (!session) return;
+    const channel = supabase
+      .channel(`workspace:${session.user.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "workspace_items",
+          filter: `user_id=eq.${session.user.id}`,
+        },
+        () => {
+          void authenticatedFetch("/api/items", { cache: "no-store" })
+            .then((response) => (response.ok ? response.json() : null))
+            .then((data: { items: Item[] } | null) => {
+              if (!data) return;
+              setItems(data.items);
+              cacheItems(data.items);
+              setSaveStatus("saved");
+            });
+        },
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [authenticatedFetch, cacheItems, session]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -385,7 +483,7 @@ export default function Home() {
       });
       setSaveStatus("saving");
       try {
-        const response = await fetch("/api/items", {
+        const response = await authenticatedFetch("/api/items", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -410,7 +508,7 @@ export default function Home() {
         setSaveStatus("retry");
       }
     },
-    [cacheItems, items, markSaved],
+    [authenticatedFetch, cacheItems, items, markSaved],
   );
 
   const createSubItem = useCallback(
@@ -493,7 +591,7 @@ export default function Home() {
       });
       setSaveStatus("saving");
       try {
-        const response = await fetch("/api/items", {
+        const response = await authenticatedFetch("/api/items", {
           method: "DELETE",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: item.id }),
@@ -509,7 +607,7 @@ export default function Home() {
         setSaveStatus("retry");
       }
     },
-    [cacheItems, markSaved],
+    [authenticatedFetch, cacheItems, markSaved],
   );
 
   const activeItems = useMemo(() => {
@@ -726,7 +824,7 @@ export default function Home() {
     try {
       const responses = await Promise.all(
         removed.map((item) =>
-          fetch("/api/items", {
+          authenticatedFetch("/api/items", {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ id: item.id }),
@@ -745,6 +843,18 @@ export default function Home() {
       setSaveStatus("retry");
     }
   };
+
+  if (!authReady) {
+    return (
+      <main className="auth-shell auth-loading" aria-label="Loading account">
+        <span className="auth-forge-mark">I&amp;I</span>
+      </main>
+    );
+  }
+
+  if (!session) {
+    return <AuthScreen />;
+  }
 
   return (
     <main
@@ -829,6 +939,31 @@ export default function Home() {
               />
               <kbd>⌘ K</kbd>
             </label>
+            <div className="account-control">
+              <button
+                type="button"
+                className="account-trigger"
+                aria-haspopup="menu"
+                aria-expanded={accountOpen}
+                onClick={() => setAccountOpen((open) => !open)}
+              >
+                <span>{username.slice(0, 1).toUpperCase()}</span>
+                <strong>{username || "Account"}</strong>
+                <i aria-hidden="true">⌄</i>
+              </button>
+              {accountOpen && (
+                <div className="account-menu" role="menu">
+                  <small>{session.user.email}</small>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => void supabase.auth.signOut()}
+                  >
+                    Log out
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -1032,6 +1167,268 @@ export default function Home() {
             <button className="bulk-close" aria-label="Clear selection" onClick={() => setSelectedIds(new Set())}>×</button>
           </div>
         )}
+      </section>
+    </main>
+  );
+}
+
+type AuthMode = "login" | "create";
+
+function passwordStrength(password: string) {
+  const score = [
+    password.length >= 8,
+    /[a-z]/.test(password),
+    /[A-Z]/.test(password),
+    /\d/.test(password),
+    /[^A-Za-z0-9]/.test(password),
+  ].filter(Boolean).length;
+  const label =
+    score <= 1 ? "Very weak" : score === 2 ? "Weak" : score === 3 ? "Fair" : score === 4 ? "Strong" : "Very strong";
+  return { score, label };
+}
+
+function AuthScreen() {
+  const [mode, setMode] = useState<AuthMode>("login");
+  const [createStep, setCreateStep] = useState<1 | 2>(1);
+  const [identifier, setIdentifier] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [username, setUsername] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const strength = passwordStrength(password);
+
+  const switchMode = (next: AuthMode) => {
+    setMode(next);
+    setCreateStep(1);
+    setPassword("");
+    setMessage("");
+    setError("");
+  };
+
+  const handleLogin = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      if (identifier.includes("@")) {
+        const { error: signInError } = await supabase.auth.signInWithPassword({
+          email: identifier.trim(),
+          password,
+        });
+        if (signInError) throw signInError;
+      } else {
+        const { data, error: functionError } = await supabase.functions.invoke(
+          "username-login",
+          { body: { username: identifier.trim(), password } },
+        );
+        const result = data as {
+          accessToken?: string;
+          refreshToken?: string;
+          error?: string;
+        } | null;
+        if (functionError || !result?.accessToken || !result.refreshToken) {
+          throw new Error(result?.error ?? functionError?.message ?? "Could not sign in.");
+        }
+        const { error: sessionError } = await supabase.auth.setSession({
+          access_token: result.accessToken,
+          refresh_token: result.refreshToken,
+        });
+        if (sessionError) throw sessionError;
+      }
+    } catch (loginError) {
+      setError(loginError instanceof Error ? loginError.message : "Could not sign in.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const continueCreate = (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    if (!email.trim() || password.length < 8) {
+      setError("Use a valid email and a password with at least 8 characters.");
+      return;
+    }
+    setCreateStep(2);
+  };
+
+  const handleCreate = async (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    setMessage("");
+    if (!/^[A-Za-z0-9_]{3,24}$/.test(username)) {
+      setError("Username must be 3–24 letters, numbers, or underscores.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const { data, error: signUpError } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+        options: {
+          data: { username },
+          emailRedirectTo: window.location.origin,
+        },
+      });
+      if (signUpError) throw signUpError;
+      if (!data.session) {
+        setMessage("Check your email to confirm the account, then return here.");
+      }
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "Could not create the account.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main className="auth-shell">
+      <header className="auth-topbar">
+        <div className="auth-brand">
+          <span>I&amp;I</span>
+          <strong>Ink <i>&amp;</i> Iron</strong>
+        </div>
+        <button
+          type="button"
+          onClick={() => switchMode(mode === "login" ? "create" : "login")}
+        >
+          {mode === "login" ? "Create account" : "Log in"}
+        </button>
+      </header>
+
+      <section className="auth-stage">
+        <div className="auth-index" aria-hidden="true">
+          {mode === "login" ? "01" : createStep === 1 ? "02" : "03"}
+        </div>
+        <div className="auth-card">
+          <div className="auth-card-head">
+            <small>{mode === "login" ? "RETURN" : "NEW WORKSPACE"}</small>
+            <h1>
+              {mode === "login"
+                ? "Open your workspace."
+                : createStep === 1
+                  ? "Create your account."
+                  : "Choose your name."}
+            </h1>
+          </div>
+
+          {mode === "login" ? (
+            <form onSubmit={handleLogin}>
+              <label>
+                <span>Email or username</span>
+                <input
+                  autoFocus
+                  autoComplete="username"
+                  value={identifier}
+                  onChange={(event) => setIdentifier(event.target.value)}
+                  placeholder="you@example.com or username"
+                  required
+                />
+              </label>
+              <label>
+                <span>Password</span>
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  required
+                />
+              </label>
+              {error && <p className="auth-error">{error}</p>}
+              <button className="auth-submit" type="submit" disabled={busy}>
+                {busy ? "Opening…" : "Enter workspace"}
+                <span aria-hidden="true">→</span>
+              </button>
+            </form>
+          ) : createStep === 1 ? (
+            <form onSubmit={continueCreate}>
+              <label>
+                <span>Email</span>
+                <input
+                  autoFocus
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="you@example.com"
+                  required
+                />
+              </label>
+              <label>
+                <span>Password</span>
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  minLength={8}
+                  required
+                />
+              </label>
+              <div className={`password-strength strength-${strength.score}`}>
+                <div>
+                  {[1, 2, 3, 4, 5].map((level) => (
+                    <span key={level} className={strength.score >= level ? "filled" : ""} />
+                  ))}
+                </div>
+                <small>{password ? strength.label : "At least 8 characters"}</small>
+              </div>
+              {error && <p className="auth-error">{error}</p>}
+              <button className="auth-submit" type="submit">
+                Continue
+                <span aria-hidden="true">→</span>
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleCreate}>
+              <button
+                type="button"
+                className="auth-back"
+                onClick={() => setCreateStep(1)}
+              >
+                ← {email}
+              </button>
+              <label>
+                <span>Username</span>
+                <input
+                  autoFocus
+                  autoComplete="username"
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  placeholder="3–24 letters, numbers, or _"
+                  minLength={3}
+                  maxLength={24}
+                  pattern="[A-Za-z0-9_]+"
+                  required
+                />
+              </label>
+              <p className="auth-hint">
+                This is what appears in the top-right corner. You can use it instead of
+                your email when signing in.
+              </p>
+              {message && <p className="auth-message">{message}</p>}
+              {error && <p className="auth-error">{error}</p>}
+              <button className="auth-submit" type="submit" disabled={busy || Boolean(message)}>
+                {busy ? "Creating…" : message ? "Email sent" : "Create workspace"}
+                <span aria-hidden="true">→</span>
+              </button>
+            </form>
+          )}
+
+          <div className="auth-switch">
+            <span>{mode === "login" ? "New here?" : "Already have an account?"}</span>
+            <button
+              type="button"
+              onClick={() => switchMode(mode === "login" ? "create" : "login")}
+            >
+              {mode === "login" ? "Create account" : "Log in"}
+            </button>
+          </div>
+        </div>
       </section>
     </main>
   );
