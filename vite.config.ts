@@ -55,7 +55,9 @@ export default defineConfig(async () => {
         vinext(),
         nitro({
           preset: "vercel",
-          output: { dir: ".output" },
+          // Vercel only recognizes framework-defined functions and routes when
+          // they are emitted using the Build Output API's canonical location.
+          output: { dir: ".vercel/output" },
         }),
       ],
     };
