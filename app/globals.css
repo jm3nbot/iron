@@ -266,6 +266,7 @@ select:focus-visible {
   border: 0;
   background: transparent;
   cursor: col-resize;
+  touch-action: none;
 }
 
 .sidebar-resize::after {
@@ -296,8 +297,7 @@ select:focus-visible {
 .sidebar-collapsed .brand > div,
 .sidebar-collapsed .nav-item > span:nth-child(2),
 .sidebar-collapsed .nav-item em,
-.sidebar-collapsed .nav-plus,
-.sidebar-collapsed .rail-foot {
+.sidebar-collapsed .nav-plus {
   display: none;
 }
 
@@ -314,43 +314,6 @@ select:focus-visible {
 
 .sidebar-collapsed .sidebar-toggle {
   right: 18px;
-}
-
-.rail-foot {
-  margin-top: auto;
-  padding: 20px 8px 0;
-  border-top: 1px solid var(--iron);
-}
-
-.save-state {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--paper-faint);
-  font-size: 9px;
-  letter-spacing: .04em;
-}
-
-.save-state span {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--success);
-}
-
-.save-state.saving span {
-  background: var(--copper);
-  animation: pulse 1s ease infinite;
-}
-
-.save-state.retry span {
-  background: var(--danger);
-}
-
-.rail-foot p {
-  margin: 12px 0 0;
-  color: #aaa397;
-  font: italic 12px/1.4 var(--rail-serif);
 }
 
 .canvas {
@@ -604,6 +567,7 @@ select:focus-visible {
 
 .list-rule {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   margin-bottom: 6px;
   padding: 0 2px 8px;
@@ -613,6 +577,34 @@ select:focus-visible {
   font-weight: 650;
   letter-spacing: .18em;
   text-transform: uppercase;
+}
+
+.list-rule-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.view-mode-control {
+  padding: 4px 8px;
+  border: 1px solid var(--iron);
+  border-radius: 999px;
+  background: rgba(251,250,246,.72);
+  color: var(--paper-muted);
+  cursor: pointer;
+  font-size: 8px;
+  font-weight: 650;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  transition: color 130ms ease, border-color 130ms ease, background 130ms ease, transform 130ms ease;
+}
+
+.view-mode-control:hover,
+.view-mode-control.active {
+  border-color: rgba(166,95,56,.45);
+  background: rgba(166,95,56,.07);
+  color: var(--copper-light);
+  transform: translateY(-1px);
 }
 
 .item-line {
@@ -761,15 +753,19 @@ select:focus-visible {
 }
 
 .check {
+  position: relative;
   display: grid;
   place-items: center;
   width: 16px;
+  min-width: 16px;
   height: 16px;
+  padding: 0;
   margin-top: 4px;
   border: 1px solid var(--steel-light);
   border-radius: 50%;
   color: var(--ink);
   font-size: 9px;
+  line-height: 1;
 }
 
 .check:hover {
@@ -781,17 +777,37 @@ select:focus-visible {
   background: var(--success);
 }
 
+.completed .check::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 48%;
+  width: 4px;
+  height: 7px;
+  border-right: 1.5px solid var(--ink);
+  border-bottom: 1.5px solid var(--ink);
+  transform: translate(-50%, -58%) rotate(45deg);
+}
+
 .sub-point .check {
   width: 8px;
+  min-width: 8px;
   height: 8px;
+  aspect-ratio: 1;
+  padding: 0;
   margin: 8px 4px 0;
   border: 0;
+  border-radius: 50%;
   background: var(--steel-light);
   font-size: 0;
 }
 
 .sub-point.completed .check {
   background: var(--success);
+}
+
+.sub-point.completed .check::after {
+  display: none;
 }
 
 .item-main {
@@ -805,8 +821,10 @@ select:focus-visible {
 }
 
 .item-copy input {
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   min-width: 0;
+  flex: 0 1 auto;
   padding: 0;
   border: 0;
   border-bottom: 1px solid transparent;
@@ -1203,24 +1221,113 @@ select:focus-visible {
 
 .group {
   border-bottom: 1px solid var(--steel);
+  transition: opacity 130ms ease, background 130ms ease;
 }
 
 .group-head {
+  position: relative;
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) auto 22px;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   align-items: center;
   width: 100%;
-  padding: 24px 3px 20px;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  text-align: left;
-  transition: background 140ms ease, transform 140ms ease;
+  padding: 14px 3px 12px;
+  transition: background 140ms ease;
 }
 
 .group-head:hover {
   background: rgba(36,34,30,.02);
+}
+
+.dragging-group {
+  opacity: .52;
+  background: rgba(166,95,56,.045);
+}
+
+.group-drag {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--steel-light);
+  cursor: grab;
+  opacity: .4;
+  transition: color 120ms ease, opacity 120ms ease, transform 120ms ease;
+}
+
+.group-drag:hover {
+  color: var(--copper-light);
+  opacity: 1;
+  transform: scale(1.08);
+}
+
+.group-drag:active {
+  cursor: grabbing;
+}
+
+.group-head-main {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto 22px;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 3px 8px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: transform 140ms ease;
+}
+
+.group-head-main:hover {
   transform: translateX(3px);
+}
+
+.group-tools {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding-left: 8px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.group-head:hover .group-tools,
+.group-head:focus-within .group-tools {
+  opacity: 1;
+}
+
+.group-tools button {
+  height: 25px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--paper-faint);
+  cursor: pointer;
+  font-size: 8px;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.group-tools button:hover {
+  border-color: var(--steel);
+  background: var(--ink-raised);
+  color: var(--paper);
+}
+
+.group-tools button.danger {
+  width: 25px;
+  padding: 0;
+  font-size: 13px;
+}
+
+.group-tools button.danger:hover {
+  border-color: rgba(169,79,66,.35);
+  color: var(--danger);
 }
 
 .group-number {
@@ -1231,6 +1338,7 @@ select:focus-visible {
 .group-name {
   font: 500 24px/1.1 var(--serif);
   letter-spacing: -.02em;
+  cursor: text;
 }
 
 .group-count {
@@ -1241,18 +1349,33 @@ select:focus-visible {
 }
 
 .chevron {
-  color: var(--paper-faint);
-  font-size: 16px;
-  text-align: right;
-  transition: transform 150ms ease;
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
 }
 
-.chevron.closed {
-  transform: rotate(-90deg);
+.chevron::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.25px solid var(--paper-faint);
+  border-bottom: 1.25px solid var(--paper-faint);
+  transform: translateY(-2px) rotate(45deg);
+  transition: border-color 130ms ease, transform 150ms ease;
+}
+
+.group-head-main:hover .chevron::after {
+  border-color: var(--copper-light);
+}
+
+.chevron.closed::after {
+  transform: translateX(-2px) rotate(-45deg);
 }
 
 .group-body {
-  margin-left: 39px;
+  margin-left: 67px;
   padding-bottom: 8px;
   border-top: 1px solid var(--iron);
 }
@@ -1777,8 +1900,7 @@ select:focus-visible {
   }
 
   .rail::after,
-  .brand,
-  .rail-foot {
+  .brand {
     display: none;
   }
 

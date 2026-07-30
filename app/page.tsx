@@ -66,6 +66,8 @@ const sortModeLabels: Record<SortMode, string> = {
 const CACHE_KEY = "ink-and-iron-workspace-v1";
 const QUEUE_KEY = "ink-and-iron-pending-v1";
 const SORT_KEY = "ink-and-iron-sort-mode";
+const GROUP_ORDER_KEY = "ink-and-iron-group-order";
+const LIBRARY_FLAT_KEY = "ink-and-iron-library-flat";
 const capturePhrases = [
   "Capture a thought…",
   "Paste a link…",
@@ -177,7 +179,7 @@ export default function Home() {
   const [activeView, setActiveView] = useState<View>("now");
   const [query, setQuery] = useState("");
   const [capture, setCapture] = useState("");
-  const [saveStatus, setSaveStatus] = useState<SaveStatus>("saving");
+  const [, setSaveStatus] = useState<SaveStatus>("saving");
   const [loading, setLoading] = useState(true);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -186,6 +188,16 @@ export default function Home() {
   const [newCollection, setNewCollection] = useState("");
   const [showNewCollection, setShowNewCollection] = useState(false);
   const [sortMode, setSortMode] = useState<SortMode>("manual");
+  const [preferencesReady, setPreferencesReady] = useState(false);
+  const [libraryFlat, setLibraryFlat] = useState(false);
+  const [groupOrder, setGroupOrder] = useState<Record<"projects" | "library", string[]>>({
+    projects: [],
+    library: [],
+  });
+  const [draggingGroup, setDraggingGroup] = useState<{
+    section: "projects" | "library";
+    name: string;
+  } | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(248);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -198,6 +210,9 @@ export default function Home() {
   const searchRef = useRef<HTMLInputElement | null>(null);
   const captureRef = useRef<HTMLInputElement | null>(null);
   const marqueeCleanupRef = useRef<(() => void) | null>(null);
+  const groupToggleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
 
   const userCacheKey = session ? `${CACHE_KEY}:${session.user.id}` : null;
   const userQueueKey = session ? `${QUEUE_KEY}:${session.user.id}` : null;
@@ -379,15 +394,59 @@ export default function Home() {
       const storedCollapsed = localStorage.getItem(
         "ink-and-iron-sidebar-collapsed",
       );
-      const storedSortMode = localStorage.getItem(SORT_KEY) as SortMode | null;
       if (storedWidth >= 190 && storedWidth <= 340) setSidebarWidth(storedWidth);
       setSidebarCollapsed(storedCollapsed === "true");
-      if (storedSortMode && sortModeOrder.includes(storedSortMode)) {
-        setSortMode(storedSortMode);
-      }
     });
     return () => window.cancelAnimationFrame(frame);
   }, []);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      if (!session) {
+        setPreferencesReady(false);
+        return;
+      }
+      const suffix = session.user.id;
+      const storedSortMode = (
+        localStorage.getItem(`${SORT_KEY}:${suffix}`) ??
+        localStorage.getItem(SORT_KEY)
+      ) as SortMode | null;
+      if (storedSortMode && sortModeOrder.includes(storedSortMode)) {
+        setSortMode(storedSortMode);
+      }
+      setLibraryFlat(
+        localStorage.getItem(`${LIBRARY_FLAT_KEY}:${suffix}`) === "true",
+      );
+      try {
+        const storedOrder = JSON.parse(
+          localStorage.getItem(`${GROUP_ORDER_KEY}:${suffix}`) ?? "{}",
+        ) as Partial<Record<"projects" | "library", string[]>>;
+        setGroupOrder({
+          projects: Array.isArray(storedOrder.projects)
+            ? storedOrder.projects
+            : [],
+          library: Array.isArray(storedOrder.library)
+            ? storedOrder.library
+            : [],
+        });
+      } catch {
+        setGroupOrder({ projects: [], library: [] });
+      }
+      setPreferencesReady(true);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [session]);
+
+  useEffect(() => {
+    if (!session || !preferencesReady) return;
+    const suffix = session.user.id;
+    localStorage.setItem(`${SORT_KEY}:${suffix}`, sortMode);
+    localStorage.setItem(`${LIBRARY_FLAT_KEY}:${suffix}`, String(libraryFlat));
+    localStorage.setItem(
+      `${GROUP_ORDER_KEY}:${suffix}`,
+      JSON.stringify(groupOrder),
+    );
+  }, [groupOrder, libraryFlat, preferencesReady, session, sortMode]);
 
   useEffect(() => {
     const phrase = capturePhrases[capturePhrase];
@@ -426,6 +485,15 @@ export default function Home() {
     window.addEventListener("keydown", focusSearch);
     return () => window.removeEventListener("keydown", focusSearch);
   }, []);
+
+  useEffect(
+    () => () => {
+      if (groupToggleTimerRef.current) {
+        window.clearTimeout(groupToggleTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const updateItem = useCallback(
     (id: string, patch: Patch) => {
@@ -569,7 +637,6 @@ export default function Home() {
     const next =
       sortModeOrder[(sortModeOrder.indexOf(sortMode) + 1) % sortModeOrder.length];
     setSortMode(next);
-    localStorage.setItem(SORT_KEY, next);
   };
 
   const handleCapture = (event: FormEvent) => {
@@ -615,7 +682,9 @@ export default function Home() {
     if (needle) {
       const results = items
         .filter((item) =>
-          `${item.content} ${item.groupName} ${item.url ?? ""}`.toLowerCase().includes(needle),
+          `${item.content} ${item.groupName} ${item.note} ${item.url ?? ""} ${(item.links ?? []).join(" ")}`
+            .toLowerCase()
+            .includes(needle),
         );
       return sortVisibleItems(results, sortMode);
     }
@@ -642,8 +711,40 @@ export default function Home() {
       const key = item.groupName || (item.section === "now" ? "Now" : "Unsorted");
       grouped.set(key, [...(grouped.get(key) ?? []), item]);
     }
-    return [...grouped.entries()];
-  }, [activeItems]);
+    const entries = [...grouped.entries()];
+    if (activeView !== "projects" && activeView !== "library") return entries;
+    const preferred = groupOrder[activeView];
+    const rank = new Map(preferred.map((name, index) => [name, index]));
+    return entries.sort(([left], [right]) => {
+      const leftRank = rank.get(left) ?? Number.MAX_SAFE_INTEGER;
+      const rightRank = rank.get(right) ?? Number.MAX_SAFE_INTEGER;
+      return leftRank - rightRank;
+    });
+  }, [activeItems, activeView, groupOrder]);
+
+  const groupNamesBySection = useMemo(() => {
+    const result: Record<"projects" | "library", string[]> = {
+      projects: [],
+      library: [],
+    };
+    for (const section of ["projects", "library"] as const) {
+      const names = [
+        ...new Set(
+          items
+            .filter((item) => item.section === section && !item.archived)
+            .map((item) => item.groupName || "Unsorted"),
+        ),
+      ];
+      const preferred = groupOrder[section].filter((name) =>
+        names.includes(name),
+      );
+      result[section] = [
+        ...preferred,
+        ...names.filter((name) => !preferred.includes(name)),
+      ];
+    }
+    return result;
+  }, [groupOrder, items]);
 
   const selectedItems = useMemo(
     () => items.filter((item) => selectedIds.has(item.id)),
@@ -672,6 +773,129 @@ export default function Home() {
     });
     for (const [id, position] of positions) void sendPatch(id, { position });
     setDraggingId(null);
+  };
+
+  const moveItemToGroup = useCallback(
+    (item: Item, groupName: string) => {
+      if (
+        item.section === "now" ||
+        !groupName ||
+        groupName === item.groupName
+      ) {
+        return;
+      }
+      const descendants = new Set<string>([item.id]);
+      let found = true;
+      while (found) {
+        found = false;
+        for (const candidate of items) {
+          if (
+            candidate.parentId &&
+            descendants.has(candidate.parentId) &&
+            !descendants.has(candidate.id)
+          ) {
+            descendants.add(candidate.id);
+            found = true;
+          }
+        }
+      }
+      for (const candidate of items) {
+        if (descendants.has(candidate.id)) {
+          updateItem(candidate.id, { groupName });
+        }
+      }
+    },
+    [items, updateItem],
+  );
+
+  const renameGroup = (section: "projects" | "library", name: string) => {
+    const nextName = window.prompt(
+      section === "projects" ? "Rename project" : "Rename collection",
+      name,
+    )?.trim();
+    if (!nextName || nextName === name) return;
+    const duplicate = items.some(
+      (item) =>
+        item.section === section &&
+        !item.archived &&
+        item.groupName === nextName,
+    );
+    if (duplicate) {
+      window.alert(`“${nextName}” already exists.`);
+      return;
+    }
+    for (const item of items) {
+      if (item.section === section && item.groupName === name) {
+        updateItem(item.id, { groupName: nextName });
+      }
+    }
+    setCollapsed((current) => {
+      if (!current.has(name)) return current;
+      const next = new Set(current);
+      next.delete(name);
+      next.add(nextName);
+      return next;
+    });
+    setGroupOrder((current) => ({
+      ...current,
+      [section]: groupNamesBySection[section].map((entry) =>
+        entry === name ? nextName : entry,
+      ),
+    }));
+  };
+
+  const deleteGroup = (section: "projects" | "library", name: string) => {
+    if (name === "Unsorted") return;
+    const label = section === "projects" ? "project" : "collection";
+    if (
+      !window.confirm(
+        `Delete the ${label} “${name}”? Its lines will move to Unsorted.`,
+      )
+    ) {
+      return;
+    }
+    for (const item of items) {
+      if (item.section === section && item.groupName === name) {
+        updateItem(item.id, { groupName: "Unsorted" });
+      }
+    }
+    setCollapsed((current) => {
+      const next = new Set(current);
+      next.delete(name);
+      return next;
+    });
+    setGroupOrder((current) => ({
+      ...current,
+      [section]: [
+        ...groupNamesBySection[section].filter(
+          (entry) => entry !== name && entry !== "Unsorted",
+        ),
+        "Unsorted",
+      ],
+    }));
+  };
+
+  const reorderGroup = (
+    section: "projects" | "library",
+    targetName: string,
+  ) => {
+    if (
+      !draggingGroup ||
+      draggingGroup.section !== section ||
+      draggingGroup.name === targetName
+    ) {
+      return;
+    }
+    setGroupOrder((current) => {
+      const order = [...groupNamesBySection[section]];
+      const from = order.indexOf(draggingGroup.name);
+      const to = order.indexOf(targetName);
+      if (from < 0 || to < 0) return current;
+      const [moved] = order.splice(from, 1);
+      order.splice(to, 0, moved);
+      return { ...current, [section]: order };
+    });
+    setDraggingGroup(null);
   };
 
   const toggleGroup = (name: string) => {
@@ -710,16 +934,30 @@ export default function Home() {
 
   const resizeSidebar = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
-    if (sidebarCollapsed) setSidebarCollapsed(false);
     const startX = event.clientX;
     const startWidth = sidebarCollapsed ? 190 : sidebarWidth;
+    const startedCollapsed = sidebarCollapsed;
+    let moved = false;
     const move = (moveEvent: PointerEvent) => {
+      if (Math.abs(moveEvent.clientX - startX) > 4) moved = true;
+      if (!moved) return;
+      if (startedCollapsed) setSidebarCollapsed(false);
       const width = Math.max(190, Math.min(340, startWidth + moveEvent.clientX - startX));
       setSidebarWidth(width);
     };
     const stop = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
+      if (!moved) {
+        const nextCollapsed = !startedCollapsed;
+        setSidebarCollapsed(nextCollapsed);
+        localStorage.setItem(
+          "ink-and-iron-sidebar-collapsed",
+          String(nextCollapsed),
+        );
+        return;
+      }
+      localStorage.setItem("ink-and-iron-sidebar-collapsed", "false");
       setSidebarWidth((width) => {
         localStorage.setItem("ink-and-iron-sidebar-width", String(width));
         return width;
@@ -891,13 +1129,6 @@ export default function Home() {
           ))}
         </nav>
 
-        <div className="rail-foot">
-          <div className={`save-state ${saveStatus}`}>
-            <span />
-            {saveStatus === "saved" ? "All changes saved" : saveStatus === "saving" ? "Forging changes" : "Saved locally · retrying"}
-          </div>
-          <p>Make the next move smaller.</p>
-        </div>
         <button className="sidebar-toggle" onClick={toggleSidebar} aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}>
           {sidebarCollapsed ? "›" : "‹"}
         </button>
@@ -1035,11 +1266,33 @@ export default function Home() {
                 <button onClick={() => void createItem("New thought", activeView as Section)}>Add a line</button>
               )}
             </div>
-          ) : query || activeView === "now" || activeView === "archive" ? (
+          ) : query ||
+            activeView === "now" ||
+            activeView === "archive" ||
+            (activeView === "library" && libraryFlat) ? (
             <div className="line-list">
               <div className="list-rule">
-                <span>{query ? "Results" : activeView === "archive" ? "Archived lines" : "Current queue"}</span>
-                <span>{activeItems.length} lines</span>
+                <span>
+                  {query
+                    ? "Results"
+                    : activeView === "archive"
+                      ? "Archived lines"
+                      : activeView === "library"
+                        ? "All library lines"
+                        : "Current queue"}
+                </span>
+                <span className="list-rule-actions">
+                  {activeView === "library" && !query && (
+                    <button
+                      type="button"
+                      className="view-mode-control active"
+                      onClick={() => setLibraryFlat(false)}
+                    >
+                      Show collections
+                    </button>
+                  )}
+                  <span>{activeItems.length} lines</span>
+                </span>
               </div>
               {activeItems.map((item) => (
                 <ItemLine
@@ -1049,6 +1302,12 @@ export default function Home() {
                   updateItem={updateItem}
                   deleteItem={deleteItem}
                   addSubItem={() => createSubItem(item)}
+                  groupNames={
+                    item.section === "projects" || item.section === "library"
+                      ? groupNamesBySection[item.section]
+                      : []
+                  }
+                  moveToGroup={(groupName) => moveItemToGroup(item, groupName)}
                   onDragStart={() => setDraggingId(item.id)}
                   onDrop={() => reorder(item.id)}
                 />
@@ -1061,16 +1320,121 @@ export default function Home() {
             <div className="group-list">
               <div className="list-rule">
                 <span>{activeView === "projects" ? "Active projects" : "Collections"}</span>
-                <span>{groups.length} groups</span>
+                <span className="list-rule-actions">
+                  {activeView === "library" && (
+                    <button
+                      type="button"
+                      className="view-mode-control"
+                      onClick={() => setLibraryFlat(true)}
+                    >
+                      Show all lines
+                    </button>
+                  )}
+                  <span>{groups.length} groups</span>
+                </span>
               </div>
               {groups.map(([name, groupItems], index) => (
-                <section className="group" key={name}>
-                  <button className="group-head" onClick={() => toggleGroup(name)}>
-                    <span className="group-number">{String(index + 1).padStart(2, "0")}</span>
-                    <span className="group-name">{name}</span>
-                    <span className="group-count">{groupItems.length} lines</span>
-                    <span className={`chevron ${collapsed.has(name) ? "closed" : ""}`}>⌄</span>
-                  </button>
+                <section
+                  className={`group ${draggingGroup?.name === name ? "dragging-group" : ""}`}
+                  key={name}
+                  onDragOver={(event) => {
+                    if (draggingGroup) event.preventDefault();
+                  }}
+                  onDrop={(event) => {
+                    if (!draggingGroup) return;
+                    event.preventDefault();
+                    reorderGroup(activeView as "projects" | "library", name);
+                  }}
+                >
+                  <div className="group-head">
+                    <button
+                      type="button"
+                      className="group-drag"
+                      draggable
+                      aria-label={`Reorder ${name}`}
+                      title="Drag to reorder"
+                      onDragStart={(event) => {
+                        event.stopPropagation();
+                        setDraggingGroup({
+                          section: activeView as "projects" | "library",
+                          name,
+                        });
+                      }}
+                      onDragEnd={() => setDraggingGroup(null)}
+                    >
+                      ⠿
+                    </button>
+                    <button
+                      type="button"
+                      className="group-head-main"
+                      aria-label={`${collapsed.has(name) ? "Expand" : "Collapse"} ${name}. Double-click its name or press F2 to rename.`}
+                      onClick={() => {
+                        if (groupToggleTimerRef.current) {
+                          window.clearTimeout(groupToggleTimerRef.current);
+                        }
+                        groupToggleTimerRef.current = window.setTimeout(() => {
+                          toggleGroup(name);
+                          groupToggleTimerRef.current = null;
+                        }, 190);
+                      }}
+                      onDoubleClick={(event) => {
+                        if (
+                          !(event.target instanceof HTMLElement) ||
+                          !event.target.closest(".group-name")
+                        ) {
+                          return;
+                        }
+                        event.preventDefault();
+                        if (groupToggleTimerRef.current) {
+                          window.clearTimeout(groupToggleTimerRef.current);
+                          groupToggleTimerRef.current = null;
+                        }
+                        renameGroup(
+                          activeView as "projects" | "library",
+                          name,
+                        );
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== "F2") return;
+                        event.preventDefault();
+                        renameGroup(
+                          activeView as "projects" | "library",
+                          name,
+                        );
+                      }}
+                    >
+                      <span className="group-number">{String(index + 1).padStart(2, "0")}</span>
+                      <span
+                        className="group-name"
+                        title="Double-click to rename"
+                      >
+                        {name}
+                      </span>
+                      <span className="group-count">{groupItems.length} lines</span>
+                      <span
+                        className={`chevron ${collapsed.has(name) ? "closed" : ""}`}
+                        aria-hidden="true"
+                      />
+                    </button>
+                    <div className="group-tools">
+                      {name !== "Unsorted" && (
+                        <button
+                          type="button"
+                          className="danger"
+                          aria-label={`Delete ${name}`}
+                          title="Delete group"
+                          onClick={() =>
+                            deleteGroup(
+                              activeView as "projects" | "library",
+                              name,
+                            )
+                          }
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  </div>
                   {!collapsed.has(name) && (
                     <div className="group-body">
                       {groupItems.map((item) => (
@@ -1081,6 +1445,15 @@ export default function Home() {
                           updateItem={updateItem}
                           deleteItem={deleteItem}
                           addSubItem={() => createSubItem(item)}
+                          groupNames={
+                            activeView === "projects" ||
+                            activeView === "library"
+                              ? groupNamesBySection[activeView]
+                              : []
+                          }
+                          moveToGroup={(groupName) =>
+                            moveItemToGroup(item, groupName)
+                          }
                           onDragStart={() => setDraggingId(item.id)}
                           onDrop={() => reorder(item.id)}
                         />
@@ -1458,6 +1831,8 @@ function ItemLine({
   updateItem,
   deleteItem,
   addSubItem,
+  groupNames,
+  moveToGroup,
   onDragStart,
   onDrop,
 }: {
@@ -1466,11 +1841,13 @@ function ItemLine({
   updateItem: (id: string, patch: Patch) => void;
   deleteItem: (item: Item) => void;
   addSubItem: () => void;
+  groupNames: string[];
+  moveToGroup: (groupName: string) => void;
   onDragStart: () => void;
   onDrop: () => void;
 }) {
   const [draft, setDraft] = useState(item.content);
-  const [noteOpen, setNoteOpen] = useState(Boolean(item.note));
+  const [noteOpen, setNoteOpen] = useState(false);
   const [noteDraft, setNoteDraft] = useState(item.note ?? "");
   const [hovered, setHovered] = useState(false);
   const state = dueState(item.dueDate);
@@ -1488,7 +1865,12 @@ function ItemLine({
       }
       if (event.key.toLowerCase() === "n") {
         event.preventDefault();
-        setNoteOpen((open) => !open);
+        setNoteOpen((open) => {
+          if (open && noteDraft !== (item.note ?? "")) {
+            updateItem(item.id, { note: noteDraft });
+          }
+          return !open;
+        });
       }
       if (event.key.toLowerCase() === "b") {
         event.preventDefault();
@@ -1497,7 +1879,7 @@ function ItemLine({
     };
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
-  }, [hovered, item.bold, item.id, updateItem]);
+  }, [hovered, item.bold, item.id, item.note, noteDraft, updateItem]);
 
   const commit = () => {
     const clean = draft.trim() || "Untitled";
@@ -1556,7 +1938,12 @@ function ItemLine({
     ) {
       return;
     }
-    setNoteOpen((open) => !open);
+    setNoteOpen((open) => {
+      if (open && noteDraft !== (item.note ?? "")) {
+        updateItem(item.id, { note: noteDraft });
+      }
+      return !open;
+    });
   };
 
   return (
@@ -1572,6 +1959,7 @@ function ItemLine({
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
         event.preventDefault();
+        event.stopPropagation();
         onDrop();
       }}
     >
@@ -1581,13 +1969,15 @@ function ItemLine({
         aria-label={item.completed ? `Restore ${item.content}` : `Complete ${item.content}`}
         onClick={() => updateItem(item.id, { completed: !item.completed })}
       >
-        {item.completed ? "✓" : ""}
       </button>
       <div className="item-main">
         <div className="item-copy">
           <input
             aria-label={`Edit ${item.content}`}
             className={item.bold ? "bold" : ""}
+            style={{
+              width: `${Math.max(12, Math.min(88, draft.length * 2 + 4))}ch`,
+            }}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onBlur={commit}
@@ -1639,7 +2029,6 @@ function ItemLine({
           <div className="item-note">
             <span aria-hidden="true">Note</span>
             <textarea
-              autoFocus={!item.note}
               aria-label={`Note for ${item.content}`}
               placeholder="Add context, a reminder, or a thought…"
               value={noteDraft}
@@ -1677,6 +2066,26 @@ function ItemLine({
           <option value="projects">Projects</option>
           <option value="library">Library</option>
         </select>
+        {(item.section === "projects" || item.section === "library") &&
+          groupNames.length > 0 && (
+            <select
+              className="group-move"
+              aria-label={`Move ${item.content} to another ${
+                item.section === "projects" ? "project" : "collection"
+              }`}
+              title={`Move to another ${
+                item.section === "projects" ? "project" : "collection"
+              }`}
+              value={item.groupName || "Unsorted"}
+              onChange={(event) => moveToGroup(event.target.value)}
+            >
+              {groupNames.map((name) => (
+                <option value={name} key={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          )}
         <button
           aria-label={item.archived ? "Restore from archive" : "Archive"}
           onClick={() =>
