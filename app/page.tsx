@@ -240,10 +240,18 @@ export default function Home() {
       try {
         const response = await fetch("/api/items", { cache: "no-store" });
         if (!response.ok) throw new Error("Load failed");
-        const data = (await response.json()) as { items: Item[] };
+        const data = (await response.json()) as {
+          items: Item[];
+          storageMode?: "hosted" | "browser";
+        };
         if (!cancelled) {
-          setItems(data.items);
-          cacheItems(data.items);
+          const cached = localStorage.getItem(CACHE_KEY);
+          const nextItems =
+            data.storageMode === "browser" && cached
+              ? (JSON.parse(cached) as Item[])
+              : data.items;
+          setItems(nextItems);
+          cacheItems(nextItems);
           setSaveStatus("saved");
           void flushPending();
         }
@@ -266,14 +274,21 @@ export default function Home() {
   }, [cacheItems, flushPending]);
 
   useEffect(() => {
-    const storedWidth = Number(localStorage.getItem("ink-and-iron-sidebar-width"));
-    const storedCollapsed = localStorage.getItem("ink-and-iron-sidebar-collapsed");
-    const storedSortMode = localStorage.getItem(SORT_KEY) as SortMode | null;
-    if (storedWidth >= 190 && storedWidth <= 340) setSidebarWidth(storedWidth);
-    setSidebarCollapsed(storedCollapsed === "true");
-    if (storedSortMode && sortModeOrder.includes(storedSortMode)) {
-      setSortMode(storedSortMode);
-    }
+    const frame = window.requestAnimationFrame(() => {
+      const storedWidth = Number(
+        localStorage.getItem("ink-and-iron-sidebar-width"),
+      );
+      const storedCollapsed = localStorage.getItem(
+        "ink-and-iron-sidebar-collapsed",
+      );
+      const storedSortMode = localStorage.getItem(SORT_KEY) as SortMode | null;
+      if (storedWidth >= 190 && storedWidth <= 340) setSidebarWidth(storedWidth);
+      setSidebarCollapsed(storedCollapsed === "true");
+      if (storedSortMode && sortModeOrder.includes(storedSortMode)) {
+        setSortMode(storedSortMode);
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, []);
 
   useEffect(() => {
@@ -592,11 +607,7 @@ export default function Home() {
       return;
     }
     if (view === "archive") return;
-    void createItem(
-      view === "library" ? "New reference" : "New item",
-      view,
-      view === "library" ? "Unsorted" : "",
-    );
+    void createItem("New item", view, "");
   };
 
   const resizeSidebar = (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -897,7 +908,7 @@ export default function Home() {
               </div>
               {activeItems.map((item) => (
                 <ItemLine
-                  key={item.id}
+                  key={`${item.id}:${item.content}:${item.note}`}
                   item={item}
                   selected={selectedIds.has(item.id)}
                   updateItem={updateItem}
@@ -929,7 +940,7 @@ export default function Home() {
                     <div className="group-body">
                       {groupItems.map((item) => (
                         <ItemLine
-                          key={item.id}
+                          key={`${item.id}:${item.content}:${item.note}`}
                           item={item}
                           selected={selectedIds.has(item.id)}
                           updateItem={updateItem}
@@ -1066,9 +1077,6 @@ function ItemLine({
   const [noteDraft, setNoteDraft] = useState(item.note ?? "");
   const [hovered, setHovered] = useState(false);
   const state = dueState(item.dueDate);
-
-  useEffect(() => setDraft(item.content), [item.content]);
-  useEffect(() => setNoteDraft(item.note ?? ""), [item.note]);
 
   useEffect(() => {
     if (!hovered) return;

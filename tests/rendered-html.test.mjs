@@ -16,16 +16,21 @@ test("renders the Ink & Iron workspace shell", async () => {
   assert.doesNotMatch(`${layout}\n${page}`, /codex-preview|react-loading-skeleton/i);
 });
 
-test("keeps the site lightweight and D1-backed", async () => {
-  const [page, css, hosting, packageJson] = await Promise.all([
+test("keeps the site lightweight with dual-platform persistence", async () => {
+  const [page, css, hosting, packageJson, vercel, fallback] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),
     readFile(new URL("app/globals.css", root), "utf8"),
     readFile(new URL(".openai/hosting.json", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
+    readFile(new URL("vercel.json", root), "utf8"),
+    readFile(new URL("public/fallback/index.html", root), "utf8"),
   ]);
   assert.match(page, /\/api\/items/);
   assert.match(css, /--copper:/);
   assert.match(hosting, /"d1": "DB"/);
+  assert.match(packageJson, /build:vercel/);
+  assert.match(vercel, /"outputDirectory": ".output"/);
+  assert.match(fallback, /Ink &amp; Iron/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.doesNotMatch(css, /url\(/);
 });

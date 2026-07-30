@@ -1,6 +1,9 @@
-import { and, asc, desc, eq } from "drizzle-orm";
-import { ensureWorkspaceSchema, getD1, getDb } from "@/db";
-import { workspaceItems } from "@/db/schema";
+import {
+  getWorkspaceRepository,
+  type DatabaseChanges,
+  type DatabaseItem,
+  type WorkspaceRepository,
+} from "@/db";
 
 export const dynamic = "force-dynamic";
 
@@ -106,65 +109,54 @@ function toPublicItem<T extends { links: string; url: string | null }>(item: T) 
   return { ...item, links: cleanLinks(item.links, item.url) };
 }
 
-async function seedIfEmpty() {
-  const db = getDb();
-  const existing = await db.select({ id: workspaceItems.id }).from(workspaceItems).limit(1);
-  if (existing.length) return;
-
+function seedRows(): DatabaseItem[] {
   const now = new Date().toISOString();
-  const rows = seedItems.map((item, position) => ({
-      id: `seed-${String(position + 1).padStart(3, "0")}`,
-      content: item.content,
-      section: item.section,
-      groupName: item.groupName ?? "",
-      url: item.url ?? null,
-      links: JSON.stringify(item.url ? [item.url] : []),
-      note: "",
-      parentId: null,
-      priority: item.priority ?? "none",
-      dueDate: null,
-      completed: false,
-      archived: false,
-      archivedAt: null,
-      position,
-      indent: 0,
-      bold: item.bold ?? false,
-      createdAt: now,
-      updatedAt: now,
-    }));
-
-  // Keep each statement below D1's parameter ceiling.
-  for (let index = 0; index < rows.length; index += 6) {
-    await db.insert(workspaceItems).values(rows.slice(index, index + 6));
-  }
+  return seedItems.map((item, position) => ({
+    id: `seed-${String(position + 1).padStart(3, "0")}`,
+    content: item.content,
+    section: item.section,
+    groupName: item.groupName ?? "",
+    url: item.url ?? null,
+    links: JSON.stringify(item.url ? [item.url] : []),
+    note: "",
+    parentId: null,
+    priority: item.priority ?? "none",
+    dueDate: null,
+    completed: false,
+    archived: false,
+    archivedAt: null,
+    position,
+    indent: 0,
+    bold: item.bold ?? false,
+    createdAt: now,
+    updatedAt: now,
+  }));
 }
 
-async function retireRemovedContent() {
-  const d1 = getD1();
-  await d1.batch([
-    d1.prepare(
-      "DELETE FROM workspace_items WHERE id IN ('seed-017','seed-018','seed-019','seed-020','seed-021','seed-022','seed-023','seed-024','seed-038','seed-039','seed-040','seed-041','seed-042','seed-043','seed-044','seed-045','seed-046')",
-    ),
-    d1.prepare(
-      "UPDATE workspace_items SET section = 'library', group_name = 'Unsorted' WHERE section = 'notes'",
-    ),
-  ]);
+async function seedIfEmpty(repository: WorkspaceRepository) {
+  if ((await repository.count()) > 0) return;
+  for (const item of seedRows()) await repository.insert(item);
+}
+
+async function readyRepository() {
+  const repository = await getWorkspaceRepository();
+  if (!repository) return null;
+  await repository.retireLegacyContent();
+  await seedIfEmpty(repository);
+  return repository;
 }
 
 export async function GET() {
   try {
-    await ensureWorkspaceSchema();
-    await retireRemovedContent();
-    await seedIfEmpty();
-    const rows = await getDb()
-      .select()
-      .from(workspaceItems)
-      .orderBy(
-        asc(workspaceItems.section),
-        asc(workspaceItems.groupName),
-        asc(workspaceItems.position),
-      );
-    return Response.json({ items: rows.map(toPublicItem) });
+    const repository = await readyRepository();
+    if (!repository) {
+      return Response.json({
+        items: seedRows().map(toPublicItem),
+        storageMode: "browser",
+      });
+    }
+    const rows = await repository.list();
+    return Response.json({ items: rows.map(toPublicItem), storageMode: "hosted" });
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "Could not load the workspace." },
@@ -175,7 +167,6 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    await ensureWorkspaceSchema();
     const payload = (await request.json()) as Record<string, unknown>;
     const content = typeof payload.content === "string" ? payload.content.trim() : "";
     const section = isSection(payload.section) ? payload.section : "now";
@@ -186,23 +177,15 @@ export async function POST(request: Request) {
       return Response.json({ error: "Write something first." }, { status: 400 });
     }
 
-    const db = getDb();
-    const [last] = await db
-      .select({ position: workspaceItems.position })
-      .from(workspaceItems)
-      .where(
-        and(
-          eq(workspaceItems.section, section),
-          eq(workspaceItems.groupName, groupName),
-        ),
-      )
-      .orderBy(desc(workspaceItems.position))
-      .limit(1);
+    const repository = await getWorkspaceRepository();
+    const lastPosition = repository
+      ? await repository.maxPosition(section, groupName)
+      : -1;
 
     const timestamp = new Date().toISOString();
     const legacyUrl = typeof payload.url === "string" ? payload.url : null;
     const links = cleanLinks(payload.links, legacyUrl);
-    const item = {
+    const item: DatabaseItem = {
       id: crypto.randomUUID(),
       content,
       section,
@@ -219,7 +202,7 @@ export async function POST(request: Request) {
       position:
         typeof payload.position === "number"
           ? Math.max(0, Math.round(payload.position))
-          : (last?.position ?? -1) + 1,
+          : lastPosition + 1,
       indent:
         typeof payload.indent === "number"
           ? Math.max(0, Math.min(3, Math.round(payload.indent)))
@@ -228,8 +211,14 @@ export async function POST(request: Request) {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    await db.insert(workspaceItems).values(item);
-    return Response.json({ item: toPublicItem(item) }, { status: 201 });
+    if (repository) await repository.insert(item);
+    return Response.json(
+      {
+        item: toPublicItem(item),
+        storageMode: repository ? "hosted" : "browser",
+      },
+      { status: 201 },
+    );
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "Could not create the item." },
@@ -240,14 +229,18 @@ export async function POST(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
-    await ensureWorkspaceSchema();
     const payload = (await request.json()) as Record<string, unknown>;
     const id = typeof payload.id === "string" ? payload.id : "";
     if (!id) {
       return Response.json({ error: "Item id is required." }, { status: 400 });
     }
 
-    const changes: Record<string, string | number | boolean | null> = {};
+    const repository = await getWorkspaceRepository();
+    if (!repository) {
+      return Response.json({ ok: true, storageMode: "browser" });
+    }
+
+    const changes: DatabaseChanges = {};
     const touchesContent = Object.keys(payload).some(
       (key) => key !== "id" && key !== "position",
     );
@@ -268,11 +261,7 @@ export async function PATCH(request: Request) {
     if (typeof payload.indent === "number") changes.indent = Math.max(0, Math.min(2, Math.round(payload.indent)));
     if (typeof payload.bold === "boolean") changes.bold = payload.bold;
 
-    const [item] = await getDb()
-      .update(workspaceItems)
-      .set(changes)
-      .where(eq(workspaceItems.id, id))
-      .returning();
+    const item = await repository.update(id, changes);
 
     if (!item) {
       return Response.json({ error: "Item not found." }, { status: 404 });
@@ -288,13 +277,16 @@ export async function PATCH(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
-    await ensureWorkspaceSchema();
     const payload = (await request.json()) as { id?: string };
     if (!payload.id) {
       return Response.json({ error: "Item id is required." }, { status: 400 });
     }
-    await getDb().delete(workspaceItems).where(eq(workspaceItems.id, payload.id));
-    return Response.json({ ok: true });
+    const repository = await getWorkspaceRepository();
+    if (repository) await repository.delete(payload.id);
+    return Response.json({
+      ok: true,
+      storageMode: repository ? "hosted" : "browser",
+    });
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "Could not delete the item." },

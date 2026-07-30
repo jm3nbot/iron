@@ -1,8 +1,8 @@
-# vinext-starter
+# Ink & Iron
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+A personal command center running on
+[Vinext](https://github.com/cloudflare/vinext). It supports Cloudflare D1 on
+Sites and Neon Postgres on Vercel.
 
 ## Prerequisites
 
@@ -15,6 +15,24 @@ npm install
 npm run dev
 npm run build
 ```
+
+## Deploy to Vercel
+
+The repository includes `vercel.json`, a Nitro Vercel build, and a lightweight
+`public/fallback/index.html` fallback. It lives away from `/` so it cannot
+override the real application route. Import the GitHub repository into Vercel
+and deploy it normally.
+
+The app works immediately with device-local browser storage. To make changes
+persist across devices:
+
+1. Open the Vercel project.
+2. Add a Neon Postgres integration from the Vercel Marketplace.
+3. Confirm the integration supplies `DATABASE_URL`.
+4. Redeploy.
+
+The first API request creates the `workspace_items` table and seeds the initial
+workspace automatically.
 
 This starter does not use `wrangler.jsonc`.
 
