@@ -15,10 +15,11 @@ import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 
 type Section = "now" | "projects" | "library";
-type View = Section | "archive";
+type View = Section | "archive" | "agenda";
 type Priority = "none" | "high" | "medium" | "low";
 type SaveStatus = "saved" | "saving" | "retry";
 type SortMode = "manual" | "priority" | "recent";
+type AgendaMode = "calendar" | "priority";
 type SelectionRect = {
   left: number;
   top: number;
@@ -53,7 +54,8 @@ const views: { id: View; label: string; mark: string }[] = [
   { id: "now", label: "Now", mark: "01" },
   { id: "projects", label: "Projects", mark: "02" },
   { id: "library", label: "Library", mark: "03" },
-  { id: "archive", label: "Archive", mark: "04" },
+  { id: "agenda", label: "Agenda", mark: "04" },
+  { id: "archive", label: "Archive", mark: "05" },
 ];
 
 const priorityOrder: Priority[] = ["none", "high", "medium", "low"];
@@ -108,6 +110,35 @@ function dueState(date: string | null) {
   if (days <= 2) return { label: `Due in ${days}d`, tone: "imminent" };
   if (days <= 7) return { label: `Due in ${days}d`, tone: "upcoming" };
   return { label: due.toLocaleDateString(undefined, { month: "short", day: "numeric" }), tone: "quiet" };
+}
+
+function dateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseDateKey(value: string) {
+  return new Date(`${value}T00:00:00`);
+}
+
+function fullDateLabel(value: string) {
+  return parseDateKey(value).toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function sectionLabel(item: Item) {
+  if (item.section === "now") return "Now";
+  return item.groupName || (item.section === "projects" ? "Projects" : "Library");
+}
+
+function priorityWeight(priority: Priority) {
+  return { high: 0, medium: 1, low: 2, none: 3 }[priority];
 }
 
 function sortItems(a: Item, b: Item) {
@@ -682,13 +713,14 @@ export default function Home() {
     if (needle) {
       const results = items
         .filter((item) =>
-          `${item.content} ${item.groupName} ${item.note} ${item.url ?? ""} ${(item.links ?? []).join(" ")}`
+          `${item.content} ${item.groupName} ${item.note} ${item.url ?? ""} ${(item.links ?? []).join(" ")} ${item.dueDate ?? ""} ${item.dueDate ? fullDateLabel(item.dueDate) : ""} ${item.priority}`
             .toLowerCase()
             .includes(needle),
         );
       return sortVisibleItems(results, sortMode);
     }
     if (activeView === "archive") return sortVisibleItems(items.filter((item) => item.archived), sortMode);
+    if (activeView === "agenda") return [];
     return sortVisibleItems(
       items.filter((item) => item.section === activeView && !item.archived),
       sortMode,
@@ -701,6 +733,7 @@ export default function Home() {
       projects: new Set(items.filter((item) => item.section === "projects" && !item.archived).map((item) => item.groupName)).size,
       library: items.filter((item) => item.section === "library" && !item.archived).length,
       archive: items.filter((item) => item.archived).length,
+      agenda: items.filter((item) => item.dueDate && !item.archived && !item.completed).length,
     }),
     [items],
   );
@@ -915,7 +948,9 @@ export default function Home() {
         ? "Projects"
         : activeView === "library"
           ? "Library"
-          : "Archive";
+          : activeView === "agenda"
+            ? "Agenda"
+            : "Archive";
 
   const quickAddFor = (view: View) => {
     setActiveView(view);
@@ -928,9 +963,28 @@ export default function Home() {
       setShowNewCollection(true);
       return;
     }
-    if (view === "archive") return;
+    if (view === "archive" || view === "agenda") return;
     void createItem("New item", view, "");
   };
+
+  const openOriginalItem = useCallback((item: Item) => {
+    setQuery("");
+    setActiveView(item.section);
+    if (item.section === "library") setLibraryFlat(false);
+    if (item.groupName) {
+      setCollapsed((current) => {
+        if (!current.has(item.groupName)) return current;
+        const next = new Set(current);
+        next.delete(item.groupName);
+        return next;
+      });
+    }
+    window.setTimeout(() => {
+      document
+        .querySelector<HTMLElement>(`[data-item-id="${item.id}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 80);
+  }, []);
 
   const resizeSidebar = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -1101,11 +1155,8 @@ export default function Home() {
     >
       <aside className="rail">
         <div className="brand">
-          <span className="brand-mark">I&amp;I</span>
-          <div>
-            <strong>Ink &amp; Iron</strong>
-            <small>Personal command center</small>
-          </div>
+          <span className="brand-lockup" role="img" aria-label="Ink & Iron" />
+          <span className="brand-mark" aria-hidden="true" />
         </div>
 
         <nav aria-label="Workspace sections">
@@ -1122,7 +1173,7 @@ export default function Home() {
                 <span>{view.label}</span>
                 <em>{counts[view.id]}</em>
               </button>
-              {view.id !== "archive" && (
+              {view.id !== "archive" && view.id !== "agenda" && (
                 <button className="nav-plus" aria-label={`Add to ${view.label}`} onClick={() => quickAddFor(view.id)}>+</button>
               )}
             </div>
@@ -1130,7 +1181,7 @@ export default function Home() {
         </nav>
 
         <button className="sidebar-toggle" onClick={toggleSidebar} aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}>
-          {sidebarCollapsed ? "›" : "‹"}
+          <span aria-hidden="true" />
         </button>
         <button className="sidebar-resize" onPointerDown={resizeSidebar} aria-label="Resize sidebar" />
       </aside>
@@ -1143,22 +1194,24 @@ export default function Home() {
             <em>{viewTitle}</em>
           </div>
           <div className="topbar-tools">
-            <button
-              type="button"
-              className={`sort-control sort-${sortMode}`}
-              aria-label={`Filter by ${sortModeLabels[sortMode]}. Click to switch to ${
-                sortModeLabels[
-                  sortModeOrder[
-                    (sortModeOrder.indexOf(sortMode) + 1) % sortModeOrder.length
+            {activeView !== "agenda" && (
+              <button
+                type="button"
+                className={`sort-control sort-${sortMode}`}
+                aria-label={`Filter by ${sortModeLabels[sortMode]}. Click to switch to ${
+                  sortModeLabels[
+                    sortModeOrder[
+                      (sortModeOrder.indexOf(sortMode) + 1) % sortModeOrder.length
+                    ]
                   ]
-                ]
-              }.`}
-              onClick={cycleSortMode}
-            >
-              <span>Filter by</span>
-              <strong>{sortModeLabels[sortMode]}</strong>
-              <i aria-hidden="true">↻</i>
-            </button>
+                }.`}
+                onClick={cycleSortMode}
+              >
+                <span>Filter by</span>
+                <strong>{sortModeLabels[sortMode]}</strong>
+                <i aria-hidden="true">↻</i>
+              </button>
+            )}
             <label className="search">
               <span aria-hidden="true">⌕</span>
               <input
@@ -1199,28 +1252,37 @@ export default function Home() {
         </header>
 
         <div className="document" onPointerDown={startMarquee}>
-          <form className="capture" onSubmit={handleCapture}>
-            <span className="capture-plus">+</span>
-            <input
-              ref={captureRef}
-              aria-label="Quick capture"
-              placeholder=""
-              value={capture}
-              onChange={(event) => setCapture(event.target.value)}
-            />
-            {!capture && (
-              <span className="capture-typewriter" aria-hidden="true">
-                {capturePhrases[capturePhrase].slice(0, captureCharacters)}
-                <i />
-              </span>
-            )}
-            <button type="submit">Add to Now <span>↵</span></button>
-          </form>
+          {activeView !== "agenda" && (
+            <form className="capture" onSubmit={handleCapture}>
+              <span className="capture-plus">+</span>
+              <input
+                ref={captureRef}
+                aria-label="Quick capture"
+                placeholder=""
+                value={capture}
+                onChange={(event) => setCapture(event.target.value)}
+              />
+              {!capture && (
+                <span className="capture-typewriter" aria-hidden="true">
+                  {capturePhrases[capturePhrase].slice(0, captureCharacters)}
+                  <i />
+                </span>
+              )}
+              <button type="submit">Add to Now <span>↵</span></button>
+            </form>
+          )}
 
           {loading ? (
             <div className="loading-lines" aria-label="Loading workspace">
               <span /><span /><span /><span />
             </div>
+          ) : !query && activeView === "agenda" ? (
+            <AgendaView
+              items={items}
+              updateItem={updateItem}
+              openOriginal={openOriginalItem}
+              onCapture={(value) => void createItem(value, "now")}
+            />
           ) : activeItems.length === 0 ? (
             <div className="empty-state">
               <span>∅</span>
@@ -1804,6 +1866,449 @@ function AuthScreen() {
         </div>
       </section>
     </main>
+  );
+}
+
+function AgendaView({
+  items,
+  updateItem,
+  openOriginal,
+  onCapture,
+}: {
+  items: Item[];
+  updateItem: (id: string, patch: Patch) => void;
+  openOriginal: (item: Item) => void;
+  onCapture: (value: string) => void;
+}) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayKey = dateKey(today);
+  const [mode, setMode] = useState<AgendaMode>("calendar");
+  const [monthCursor, setMonthCursor] = useState(
+    () => new Date(today.getFullYear(), today.getMonth(), 1),
+  );
+  const [selectedDate, setSelectedDate] = useState(todayKey);
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [agendaCapture, setAgendaCapture] = useState("");
+
+  const active = useMemo(
+    () => items.filter((item) => !item.archived && !item.completed),
+    [items],
+  );
+  const dueItems = useMemo(
+    () =>
+      active
+        .filter((item) => item.dueDate)
+        .sort((left, right) =>
+          (left.dueDate ?? "").localeCompare(right.dueDate ?? "") ||
+          priorityWeight(left.priority) - priorityWeight(right.priority) ||
+          sortItems(left, right),
+        ),
+    [active],
+  );
+  const priorityItems = useMemo(
+    () =>
+      active
+        .filter((item) => item.priority !== "none")
+        .sort((left, right) =>
+          priorityWeight(left.priority) - priorityWeight(right.priority) ||
+          (left.dueDate ?? "9999-12-31").localeCompare(
+            right.dueDate ?? "9999-12-31",
+          ) ||
+          sortItems(left, right),
+        ),
+    [active],
+  );
+  const undatedPriority = useMemo(
+    () => priorityItems.filter((item) => !item.dueDate),
+    [priorityItems],
+  );
+  const overdueItems = useMemo(
+    () => dueItems.filter((item) => item.dueDate && item.dueDate < todayKey),
+    [dueItems, todayKey],
+  );
+  const eventsByDate = useMemo(() => {
+    const grouped = new Map<string, Item[]>();
+    for (const item of dueItems) {
+      if (!item.dueDate) continue;
+      grouped.set(item.dueDate, [...(grouped.get(item.dueDate) ?? []), item]);
+    }
+    return grouped;
+  }, [dueItems]);
+
+  const calendarDays = useMemo(() => {
+    const first = new Date(
+      monthCursor.getFullYear(),
+      monthCursor.getMonth(),
+      1,
+    );
+    const mondayOffset = (first.getDay() + 6) % 7;
+    const start = new Date(first);
+    start.setDate(first.getDate() - mondayOffset);
+    return Array.from({ length: 42 }, (_, index) => {
+      const day = new Date(start);
+      day.setDate(start.getDate() + index);
+      return day;
+    });
+  }, [monthCursor]);
+
+  const selectedDayItems = eventsByDate.get(selectedDate) ?? [];
+  const selectedItem = selectedItemId
+    ? items.find((item) => item.id === selectedItemId) ?? null
+    : null;
+  const overdueCount = dueItems.filter(
+    (item) => item.dueDate && item.dueDate < todayKey,
+  ).length;
+  const todayCount = eventsByDate.get(todayKey)?.length ?? 0;
+  const nextWeek = new Date(today);
+  nextWeek.setDate(today.getDate() + 7);
+  const nextWeekKey = dateKey(nextWeek);
+  const nextWeekCount = dueItems.filter(
+    (item) =>
+      item.dueDate && item.dueDate > todayKey && item.dueDate <= nextWeekKey,
+  ).length;
+
+  const selectDate = (key: string) => {
+    setSelectedDate(key);
+    setSelectedItemId(eventsByDate.get(key)?.[0]?.id ?? null);
+  };
+
+  const moveMonth = (amount: number) => {
+    const next = new Date(
+      monthCursor.getFullYear(),
+      monthCursor.getMonth() + amount,
+      1,
+    );
+    setMonthCursor(next);
+    setSelectedDate(dateKey(next));
+    setSelectedItemId(eventsByDate.get(dateKey(next))?.[0]?.id ?? null);
+  };
+
+  const goToday = () => {
+    setMonthCursor(new Date(today.getFullYear(), today.getMonth(), 1));
+    selectDate(todayKey);
+  };
+
+  return (
+    <section className="agenda-shell" aria-label="Agenda">
+      <div className="agenda-heading">
+        <div className="agenda-tabs" role="tablist" aria-label="Agenda views">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "calendar"}
+            className={mode === "calendar" ? "active" : ""}
+            onClick={() => setMode("calendar")}
+          >
+            Calendar
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "priority"}
+            className={mode === "priority" ? "active" : ""}
+            onClick={() => setMode("priority")}
+          >
+            PriorityView
+          </button>
+        </div>
+        <form
+          className="agenda-capture"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!agendaCapture.trim()) return;
+            onCapture(agendaCapture.trim());
+            setAgendaCapture("");
+          }}
+        >
+          <span aria-hidden="true">+</span>
+          <input
+            aria-label="Add a bullet point to Now"
+            value={agendaCapture}
+            onChange={(event) => setAgendaCapture(event.target.value)}
+            placeholder="What needs your attention?"
+          />
+          <button type="submit" aria-label="Add bullet point">↵</button>
+        </form>
+        <div className="agenda-connections" aria-label="Future calendar connections">
+          <span>Calendar links</span>
+          <i>Google · Apple · Outlook</i>
+          <em>Soon</em>
+        </div>
+      </div>
+
+      <div className="agenda-ticker" aria-label="Agenda summary">
+        <span><strong>{overdueCount}</strong> overdue</span>
+        <span><strong>{todayCount}</strong> due today</span>
+        <span><strong>{nextWeekCount}</strong> next 7 days</span>
+        <span><strong>{priorityItems.length}</strong> prioritized</span>
+        <i aria-hidden="true">Ink &amp; Iron signal / {fullDateLabel(todayKey)}</i>
+      </div>
+
+      {mode === "calendar" ? (
+        <div className="agenda-calendar-layout">
+          <div className="agenda-calendar-panel">
+            <div className="agenda-month-head">
+              <div>
+                <span>Deadline map</span>
+                <strong>
+                  {monthCursor.toLocaleDateString(undefined, {
+                    month: "long",
+                    year: "numeric",
+                  })}
+                </strong>
+              </div>
+              <div className="agenda-month-actions">
+                <button type="button" onClick={() => moveMonth(-1)} aria-label="Previous month">←</button>
+                <button type="button" onClick={goToday}>Today</button>
+                <button type="button" onClick={() => moveMonth(1)} aria-label="Next month">→</button>
+              </div>
+            </div>
+            <div className="agenda-weekdays" aria-hidden="true">
+              {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => <span key={day}>{day}</span>)}
+            </div>
+            <div className="agenda-grid" role="grid" aria-label="Deadline calendar">
+              {calendarDays.map((day) => {
+                const key = dateKey(day);
+                const dayItems = eventsByDate.get(key) ?? [];
+                const outside = day.getMonth() !== monthCursor.getMonth();
+                return (
+                  <div
+                    className={`agenda-day ${outside ? "outside" : ""} ${key === todayKey ? "today" : ""} ${key === selectedDate ? "selected" : ""}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`${fullDateLabel(key)}, ${dayItems.length} deadlines`}
+                    key={key}
+                    onClick={() => selectDate(key)}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter" && event.key !== " ") return;
+                      event.preventDefault();
+                      selectDate(key);
+                    }}
+                  >
+                    <span className="agenda-day-number" aria-hidden="true">
+                      {day.getDate()}
+                    </span>
+                    <div className="agenda-day-events">
+                      {dayItems.slice(0, 3).map((item) => (
+                        <button
+                          type="button"
+                          className={`agenda-event priority-${item.priority}`}
+                          key={item.id}
+                          title={item.content}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedDate(key);
+                            setSelectedItemId(item.id);
+                          }}
+                        >
+                          {item.content}
+                        </button>
+                      ))}
+                      {dayItems.length > 3 && <span className="agenda-event-more">+{dayItems.length - 3}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <aside className="agenda-day-panel">
+            <div className="agenda-day-title">
+              <span>Selected day</span>
+              <strong>{fullDateLabel(selectedDate)}</strong>
+              <em>{selectedDayItems.length} {selectedDayItems.length === 1 ? "deadline" : "deadlines"}</em>
+            </div>
+            <div className="agenda-day-list">
+              {selectedDayItems.length ? selectedDayItems.map((item) => (
+                <button
+                  type="button"
+                  className={selectedItemId === item.id ? "active" : ""}
+                  key={item.id}
+                  onClick={() => setSelectedItemId(item.id)}
+                >
+                  <i className={`priority-dot priority-${item.priority}`} />
+                  <span>{item.content}<small>{sectionLabel(item)}</small></span>
+                  <em>›</em>
+                </button>
+              )) : (
+                <p>Nothing scheduled for this day.</p>
+              )}
+            </div>
+            {selectedItem ? (
+              <AgendaInspector key={selectedItem.id} item={selectedItem} updateItem={updateItem} openOriginal={openOriginal} />
+            ) : undatedPriority.length > 0 ? (
+              <div className="agenda-undated">
+                <span>Needs a date</span>
+                {undatedPriority.slice(0, 4).map((item) => (
+                  <button type="button" key={item.id} onClick={() => setSelectedItemId(item.id)}>
+                    {item.content}<em>{item.priority}</em>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </aside>
+        </div>
+      ) : (
+        <div className="priority-view-layout">
+          <div className="priority-view-list">
+            <div className="priority-view-head">
+              <span>All active tabs</span>
+              <div>
+                <button
+                  type="button"
+                  className="priority-overdue-jump"
+                  onClick={() =>
+                    document
+                      .getElementById("agenda-overdue")
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                  }
+                >
+                  Overdue {overdueItems.length}
+                </button>
+                <strong>{priorityItems.length} priority lines</strong>
+              </div>
+            </div>
+            {(["high", "medium", "low"] as Priority[]).map((priority) => {
+              const matching = priorityItems.filter((item) => item.priority === priority);
+              return (
+                <section className={`priority-band priority-${priority}`} key={priority}>
+                  <div className="priority-band-head">
+                    <span>{priority}</span>
+                    <em>{matching.length}</em>
+                  </div>
+                  {matching.length ? matching.map((item) => (
+                    <button
+                      type="button"
+                      className={`priority-view-item ${selectedItemId === item.id ? "active" : ""}`}
+                      key={item.id}
+                      onClick={() => setSelectedItemId(item.id)}
+                    >
+                      <span>{item.content}<small>{sectionLabel(item)}</small></span>
+                      <em>{item.dueDate ? dueState(item.dueDate)?.label : "No deadline"}</em>
+                    </button>
+                  )) : <p>No {priority} priority lines.</p>}
+                </section>
+              );
+            })}
+            <section className="priority-band priority-overdue" id="agenda-overdue">
+              <div className="priority-band-head">
+                <span>Overdue</span>
+                <em>{overdueItems.length}</em>
+              </div>
+              {overdueItems.length ? overdueItems.map((item) => (
+                <button
+                  type="button"
+                  className={`priority-view-item ${selectedItemId === item.id ? "active" : ""}`}
+                  key={item.id}
+                  onClick={() => setSelectedItemId(item.id)}
+                >
+                  <span>{item.content}<small>{sectionLabel(item)}</small></span>
+                  <em>{dueState(item.dueDate)?.label}</em>
+                </button>
+              )) : <p>Nothing overdue.</p>}
+            </section>
+          </div>
+          <aside className="priority-inspector">
+            {selectedItem ? (
+              <AgendaInspector key={selectedItem.id} item={selectedItem} updateItem={updateItem} openOriginal={openOriginal} />
+            ) : (
+              <div className="agenda-inspector-empty">
+                <span>PriorityView</span>
+                <p>Select a line to inspect its note, deadline, and source.</p>
+              </div>
+            )}
+          </aside>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AgendaInspector({
+  item,
+  updateItem,
+  openOriginal,
+}: {
+  item: Item;
+  updateItem: (id: string, patch: Patch) => void;
+  openOriginal: (item: Item) => void;
+}) {
+  const [noteDraft, setNoteDraft] = useState(item.note ?? "");
+
+  const nextPriority =
+    priorityOrder[(priorityOrder.indexOf(item.priority) + 1) % priorityOrder.length];
+  const commitNote = () => {
+    if (noteDraft !== (item.note ?? "")) {
+      updateItem(item.id, { note: noteDraft });
+    }
+  };
+  const addLink = () => {
+    const value = window.prompt("Paste a link for this line", "");
+    if (value === null) return;
+    const link = findUrl(value.trim());
+    if (!link) {
+      window.alert("Please paste a complete http:// or https:// link.");
+      return;
+    }
+    updateItem(item.id, {
+      links: [...new Set([...(item.links ?? []), link])],
+    });
+  };
+  const removeLink = (link: string) => {
+    updateItem(item.id, {
+      links: (item.links ?? []).filter((candidate) => candidate !== link),
+      url: item.url === link ? null : item.url,
+    });
+  };
+  return (
+    <div className="agenda-inspector">
+      <div className="agenda-inspector-source">
+        <span>{item.section}</span>
+        <em>{sectionLabel(item)}</em>
+      </div>
+      <h3>{item.content}</h3>
+      <div className="agenda-inspector-controls">
+        <button
+          type="button"
+          className={`priority priority-${item.priority}`}
+          onClick={() => updateItem(item.id, { priority: nextPriority })}
+        >
+          {item.priority === "none" ? "No priority" : item.priority}
+        </button>
+        <label>
+          <span>Deadline</span>
+          <input
+            type="date"
+            value={item.dueDate ?? ""}
+            onChange={(event) => updateItem(item.id, { dueDate: event.target.value || null })}
+          />
+        </label>
+      </div>
+      <div className="agenda-inspector-note">
+        <label htmlFor={`agenda-note-${item.id}`}>Note</label>
+        <textarea
+          id={`agenda-note-${item.id}`}
+          value={noteDraft}
+          onChange={(event) => setNoteDraft(event.target.value)}
+          onBlur={commitNote}
+          placeholder="Add context, a reminder, or a thought…"
+        />
+      </div>
+      <div className="agenda-inspector-links">
+        {(item.links ?? []).map((link) => (
+          <span key={link}>
+            <a href={link} target="_blank" rel="noreferrer">{linkLabel(link)} ↗</a>
+            <button type="button" aria-label={`Remove ${linkLabel(link)} link`} onClick={() => removeLink(link)}>×</button>
+          </span>
+        ))}
+        <button type="button" className="agenda-add-link" onClick={addLink}>+ Add link</button>
+      </div>
+      <div className="agenda-inspector-actions">
+        <button type="button" onClick={() => updateItem(item.id, { completed: true })}>Complete</button>
+        <button type="button" className="primary" onClick={() => openOriginal(item)}>Open original <span>→</span></button>
+      </div>
+    </div>
   );
 }
 
