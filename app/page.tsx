@@ -15,11 +15,12 @@ import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 
 type Section = "now" | "projects" | "library";
-type View = Section | "archive" | "agenda";
+type View = Section | "archive" | "agenda" | "daily";
 type Priority = "none" | "high" | "medium" | "low";
 type SaveStatus = "saved" | "saving" | "retry";
 type SortMode = "manual" | "priority" | "recent";
 type AgendaMode = "calendar" | "priority";
+type DailyMode = "today" | "tracker";
 type SelectionRect = {
   left: number;
   top: number;
@@ -50,13 +51,49 @@ type Item = {
 
 type Patch = Partial<Omit<Item, "id" | "createdAt" | "updatedAt">>;
 
+type DailyItem = {
+  id: string;
+  content: string;
+  note: string;
+  links: string[];
+  weekdayMask: number;
+  startDate: string | null;
+  endDate: string | null;
+  position: number;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type DailyCompletion = {
+  dailyId: string;
+  completionDate: string;
+  completedAt: string;
+};
+
+type DailyDraft = Pick<DailyItem, "content" | "note" | "links" | "weekdayMask" | "startDate" | "endDate">;
+
+type GoogleCalendarEvent = {
+  id: string;
+  title: string;
+  description: string;
+  location: string;
+  htmlLink: string;
+  start: string;
+  end: string;
+  allDay: boolean;
+};
+
 const views: { id: View; label: string; mark: string }[] = [
   { id: "now", label: "Now", mark: "01" },
   { id: "projects", label: "Projects", mark: "02" },
   { id: "library", label: "Library", mark: "03" },
   { id: "agenda", label: "Agenda", mark: "04" },
-  { id: "archive", label: "Archive", mark: "05" },
+  { id: "daily", label: "Daily", mark: "05" },
+  { id: "archive", label: "Archive", mark: "06" },
 ];
+
+const weekdayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 const priorityOrder: Priority[] = ["none", "high", "medium", "low"];
 const sortModeOrder: SortMode[] = ["manual", "priority", "recent"];
@@ -131,6 +168,23 @@ function fullDateLabel(value: string) {
     day: "numeric",
     year: "numeric",
   });
+}
+
+function isDailyScheduled(item: DailyItem, key: string) {
+  if (item.archived || (item.startDate && key < item.startDate) || (item.endDate && key > item.endDate)) {
+    return false;
+  }
+  const weekday = parseDateKey(key).getDay();
+  return (item.weekdayMask & (1 << weekday)) !== 0;
+}
+
+function dailyScheduleLabel(item: Pick<DailyItem, "weekdayMask" | "startDate" | "endDate">) {
+  const activeDays = weekdayLabels.filter((_, day) => (item.weekdayMask & (1 << day)) !== 0);
+  const days = activeDays.length === 7 ? "Every day" : activeDays.join(" · ");
+  if (item.startDate && item.endDate) return `${days} / ${item.startDate} → ${item.endDate}`;
+  if (item.startDate) return `${days} / from ${item.startDate}`;
+  if (item.endDate) return `${days} / through ${item.endDate}`;
+  return days;
 }
 
 function sectionLabel(item: Item) {
@@ -208,6 +262,9 @@ export default function Home() {
   const [username, setUsername] = useState("");
   const [accountOpen, setAccountOpen] = useState(false);
   const [items, setItems] = useState<Item[]>([]);
+  const [dailyItems, setDailyItems] = useState<DailyItem[]>([]);
+  const [dailyCompletions, setDailyCompletions] = useState<DailyCompletion[]>([]);
+  const [dailyLoading, setDailyLoading] = useState(true);
   const [activeView, setActiveView] = useState<View>("now");
   const [query, setQuery] = useState("");
   const [capture, setCapture] = useState("");
@@ -266,6 +323,17 @@ export default function Home() {
     [],
   );
 
+  const loadDaily = useCallback(async () => {
+    const response = await authenticatedFetch("/api/daily", { cache: "no-store" });
+    if (!response.ok) throw new Error("Daily load failed");
+    const data = (await response.json()) as {
+      items: DailyItem[];
+      completions: DailyCompletion[];
+    };
+    setDailyItems(data.items);
+    setDailyCompletions(data.completions);
+  }, [authenticatedFetch]);
+
   const markSaved = useCallback(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => setSaveStatus("saved"), 350);
@@ -285,6 +353,8 @@ export default function Home() {
       setAuthReady(true);
       if (!nextSession) {
         setItems([]);
+        setDailyItems([]);
+        setDailyCompletions([]);
         setUsername("");
         setAccountOpen(false);
       }
@@ -417,6 +487,57 @@ export default function Home() {
       void supabase.removeChannel(channel);
     };
   }, [authenticatedFetch, cacheItems, session]);
+
+  useEffect(() => {
+    if (!session) return;
+    let active = true;
+    const frame = window.requestAnimationFrame(() => {
+      void loadDaily()
+        .catch(() => undefined)
+        .finally(() => {
+          if (active) setDailyLoading(false);
+        });
+    });
+    const channel = supabase
+      .channel(`daily:${session.user.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "daily_items",
+          filter: `user_id=eq.${session.user.id}`,
+        },
+        () => { void loadDaily(); },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "daily_completions",
+          filter: `user_id=eq.${session.user.id}`,
+        },
+        () => { void loadDaily(); },
+      )
+      .subscribe();
+    return () => {
+      active = false;
+      window.cancelAnimationFrame(frame);
+      void supabase.removeChannel(channel);
+    };
+  }, [loadDaily, session]);
+
+  useEffect(() => {
+    if (!session) return;
+    const parameters = new URLSearchParams(window.location.search);
+    if (!parameters.has("calendar")) return;
+    const frame = window.requestAnimationFrame(() => {
+      setActiveView("agenda");
+      window.history.replaceState({}, "", window.location.pathname);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [session]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -709,6 +830,82 @@ export default function Home() {
     [authenticatedFetch, cacheItems, markSaved],
   );
 
+  const saveDailyItem = useCallback(
+    async (id: string | null, draft: DailyDraft) => {
+      const response = await authenticatedFetch("/api/daily", {
+        method: id ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(id ? { id, ...draft } : draft),
+      });
+      const result = (await response.json()) as { item?: DailyItem; error?: string };
+      if (!response.ok || !result.item) throw new Error(result.error ?? "Daily could not be saved.");
+      setDailyItems((current) =>
+        id
+          ? current.map((item) => (item.id === id ? result.item! : item))
+          : [...current, result.item!],
+      );
+      return result.item;
+    },
+    [authenticatedFetch],
+  );
+
+  const completeDailyItem = useCallback(
+    async (dailyId: string, completionDate: string) => {
+      const optimistic: DailyCompletion = {
+        dailyId,
+        completionDate,
+        completedAt: new Date().toISOString(),
+      };
+      setDailyCompletions((current) => [
+        ...current.filter(
+          (completion) =>
+            completion.dailyId !== dailyId || completion.completionDate !== completionDate,
+        ),
+        optimistic,
+      ]);
+      try {
+        const response = await authenticatedFetch("/api/daily", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "complete", dailyId, completionDate }),
+        });
+        const result = (await response.json()) as { completion?: DailyCompletion; error?: string };
+        if (!response.ok || !result.completion) throw new Error(result.error ?? "Daily could not be completed.");
+        setDailyCompletions((current) => [
+          ...current.filter(
+            (completion) =>
+              completion.dailyId !== dailyId || completion.completionDate !== completionDate,
+          ),
+          result.completion!,
+        ]);
+      } catch (error) {
+        setDailyCompletions((current) =>
+          current.filter(
+            (completion) =>
+              completion.dailyId !== dailyId || completion.completionDate !== completionDate,
+          ),
+        );
+        throw error;
+      }
+    },
+    [authenticatedFetch],
+  );
+
+  const deleteDailyItem = useCallback(
+    async (item: DailyItem) => {
+      if (!window.confirm(`Permanently delete “${item.content}” and its history?`)) return;
+      setDailyItems((current) => current.filter((entry) => entry.id !== item.id));
+      setDailyCompletions((current) => current.filter((entry) => entry.dailyId !== item.id));
+      const response = await authenticatedFetch("/api/daily", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: item.id }),
+      });
+      if (!response.ok) void loadDaily();
+    },
+    [authenticatedFetch, loadDaily],
+  );
+
   const activeItems = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (needle) {
@@ -721,22 +918,43 @@ export default function Home() {
       return sortVisibleItems(results, sortMode);
     }
     if (activeView === "archive") return sortVisibleItems(items.filter((item) => item.archived), sortMode);
-    if (activeView === "agenda") return [];
+    if (activeView === "agenda" || activeView === "daily") return [];
     return sortVisibleItems(
       items.filter((item) => item.section === activeView && !item.archived),
       sortMode,
     );
   }, [activeView, items, query, sortMode]);
 
+  const dailySearchResults = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return [];
+    return dailyItems.filter((item) =>
+      `${item.content} ${item.note} ${(item.links ?? []).join(" ")} ${dailyScheduleLabel(item)}`
+        .toLowerCase()
+        .includes(needle),
+    );
+  }, [dailyItems, query]);
+
   const counts = useMemo(
-    () => ({
-      now: items.filter((item) => item.section === "now" && !item.archived && !item.completed).length,
-      projects: new Set(items.filter((item) => item.section === "projects" && !item.archived).map((item) => item.groupName)).size,
-      library: items.filter((item) => item.section === "library" && !item.archived).length,
-      archive: items.filter((item) => item.archived).length,
-      agenda: items.filter((item) => item.dueDate && !item.archived && !item.completed).length,
-    }),
-    [items],
+    () => {
+      const today = dateKey(new Date());
+      const finishedToday = new Set(
+        dailyCompletions
+          .filter((completion) => completion.completionDate === today)
+          .map((completion) => completion.dailyId),
+      );
+      return {
+        now: items.filter((item) => item.section === "now" && !item.archived && !item.completed).length,
+        projects: new Set(items.filter((item) => item.section === "projects" && !item.archived).map((item) => item.groupName)).size,
+        library: items.filter((item) => item.section === "library" && !item.archived).length,
+        archive: items.filter((item) => item.archived).length,
+        agenda: items.filter((item) => item.dueDate && !item.archived && !item.completed).length,
+        daily: dailyItems.filter(
+          (item) => isDailyScheduled(item, today) && !finishedToday.has(item.id),
+        ).length,
+      };
+    },
+    [dailyCompletions, dailyItems, items],
   );
 
   const groups = useMemo(() => {
@@ -951,7 +1169,9 @@ export default function Home() {
           ? "Library"
           : activeView === "agenda"
             ? "Agenda"
-            : "Archive";
+            : activeView === "daily"
+              ? "Daily"
+              : "Archive";
 
   const quickAddFor = (view: View) => {
     setActiveView(view);
@@ -964,7 +1184,7 @@ export default function Home() {
       setShowNewCollection(true);
       return;
     }
-    if (view === "archive" || view === "agenda") return;
+    if (view === "archive" || view === "agenda" || view === "daily") return;
     void createItem("New item", view, "");
   };
 
@@ -1174,7 +1394,7 @@ export default function Home() {
                 <span>{view.label}</span>
                 <em>{counts[view.id]}</em>
               </button>
-              {view.id !== "archive" && view.id !== "agenda" && (
+              {view.id !== "archive" && view.id !== "agenda" && view.id !== "daily" && (
                 <button className="nav-plus" aria-label={`Add to ${view.label}`} onClick={() => quickAddFor(view.id)}>+</button>
               )}
             </div>
@@ -1194,7 +1414,7 @@ export default function Home() {
             <strong>{viewTitle}</strong>
           </div>
           <div className="topbar-tools">
-            {activeView !== "agenda" && (
+            {activeView !== "agenda" && activeView !== "daily" && (
               <button
                 type="button"
                 className={`sort-control sort-${sortMode}`}
@@ -1252,7 +1472,7 @@ export default function Home() {
         </header>
 
         <div className="document" onPointerDown={startMarquee}>
-          {activeView !== "agenda" && (
+          {activeView !== "agenda" && activeView !== "daily" && (
             <form className="capture" onSubmit={handleCapture}>
               <span className="capture-plus">+</span>
               <input
@@ -1283,8 +1503,18 @@ export default function Home() {
               openOriginal={openOriginalItem}
               onCapture={(value) => void createItem(value, "now")}
               zoomPreferenceKey={`${AGENDA_ZOOM_KEY}:${session.user.id}`}
+              authenticatedFetch={authenticatedFetch}
             />
-          ) : activeItems.length === 0 ? (
+          ) : !query && activeView === "daily" ? (
+            <DailyView
+              items={dailyItems}
+              completions={dailyCompletions}
+              loading={dailyLoading}
+              saveItem={saveDailyItem}
+              completeItem={completeDailyItem}
+              deleteItem={deleteDailyItem}
+            />
+          ) : activeItems.length === 0 && dailySearchResults.length === 0 ? (
             <div className="empty-state">
               <span>∅</span>
               <h2>Clear space.</h2>
@@ -1354,7 +1584,7 @@ export default function Home() {
                       Show collections
                     </button>
                   )}
-                  <span>{activeItems.length} lines</span>
+                  <span>{activeItems.length + dailySearchResults.length} lines</span>
                 </span>
               </div>
               {activeItems.map((item) => (
@@ -1374,6 +1604,22 @@ export default function Home() {
                   onDragStart={() => setDraggingId(item.id)}
                   onDrop={() => reorder(item.id)}
                 />
+              ))}
+              {query && dailySearchResults.map((item) => (
+                <button
+                  type="button"
+                  className="daily-search-line"
+                  key={`daily-${item.id}`}
+                  onClick={() => {
+                    setQuery("");
+                    setActiveView("daily");
+                  }}
+                >
+                  <span className="daily-search-mark">05</span>
+                  <strong>{item.content}</strong>
+                  <small>Daily · {dailyScheduleLabel(item)}</small>
+                  <em>›</em>
+                </button>
               ))}
               {!query && activeView === "now" && (
                 <InlineAdd onAdd={(value) => void createItem(value, activeView)} />
@@ -1875,18 +2121,390 @@ function AuthScreen() {
   );
 }
 
+function DailyView({
+  items,
+  completions,
+  loading,
+  saveItem,
+  completeItem,
+  deleteItem,
+}: {
+  items: DailyItem[];
+  completions: DailyCompletion[];
+  loading: boolean;
+  saveItem: (id: string | null, draft: DailyDraft) => Promise<DailyItem>;
+  completeItem: (id: string, completionDate: string) => Promise<void>;
+  deleteItem: (item: DailyItem) => Promise<void>;
+}) {
+  const [mode, setMode] = useState<DailyMode>("today");
+  const [editorItem, setEditorItem] = useState<DailyItem | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [departingId, setDepartingId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const today = dateKey(new Date());
+  const completedToday = useMemo(
+    () =>
+      new Set(
+        completions
+          .filter((completion) => completion.completionDate === today)
+          .map((completion) => completion.dailyId),
+      ),
+    [completions, today],
+  );
+  const scheduledToday = useMemo(
+    () => items.filter((item) => isDailyScheduled(item, today)),
+    [items, today],
+  );
+  const remaining = scheduledToday.filter((item) => !completedToday.has(item.id));
+  const finishedCount = scheduledToday.length - remaining.length;
+
+  const trackerDays = useMemo(() => {
+    const end = parseDateKey(today);
+    return Array.from({ length: 182 }, (_, index) => {
+      const day = new Date(end);
+      day.setDate(end.getDate() - (181 - index));
+      const key = dateKey(day);
+      const eligible = items.filter((item) => isDailyScheduled(item, key));
+      const finished = eligible.filter((item) =>
+        completions.some(
+          (completion) => completion.dailyId === item.id && completion.completionDate === key,
+        ),
+      ).length;
+      return {
+        key,
+        eligible: eligible.length,
+        finished,
+        ratio: eligible.length ? finished / eligible.length : -1,
+      };
+    });
+  }, [completions, items, today]);
+
+  const trackedDays = trackerDays.filter((day) => day.eligible > 0);
+  const totalDue = trackedDays.reduce((sum, day) => sum + day.eligible, 0);
+  const totalFinished = trackedDays.reduce((sum, day) => sum + day.finished, 0);
+  const completionRate = totalDue ? Math.round((totalFinished / totalDue) * 100) : 0;
+  let streak = 0;
+  for (let index = trackerDays.length - 1; index >= 0; index -= 1) {
+    const day = trackerDays[index];
+    if (!day.eligible) continue;
+    if (day.ratio === 1) streak += 1;
+    else if (day.key === today) continue;
+    else break;
+  }
+
+  const complete = (item: DailyItem) => {
+    setDepartingId(item.id);
+    window.setTimeout(() => {
+      void completeItem(item.id, today).catch((completionError) => {
+        setError(completionError instanceof Error ? completionError.message : "Daily could not be completed.");
+      });
+      setDepartingId(null);
+    }, 190);
+  };
+
+  return (
+    <section className="daily-shell" aria-label="Daily routines">
+      <div className="daily-heading">
+        <div className="daily-tabs" role="tablist" aria-label="Daily views">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "today"}
+            className={mode === "today" ? "active" : ""}
+            onClick={() => setMode("today")}
+          >
+            Today
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "tracker"}
+            className={mode === "tracker" ? "active" : ""}
+            onClick={() => setMode("tracker")}
+          >
+            Daily Tracker
+          </button>
+        </div>
+        <div className="daily-date">
+          <span>Daily cycle</span>
+          <strong>{fullDateLabel(today)}</strong>
+        </div>
+        <button
+          type="button"
+          className="daily-add"
+          onClick={() => {
+            setEditorItem(null);
+            setEditorOpen(true);
+          }}
+        >
+          + New daily
+        </button>
+      </div>
+
+      {error && <div className="daily-error" role="status">{error}</div>}
+
+      {mode === "today" ? (
+        <div className="daily-today-layout">
+          <div className="daily-main">
+            <div className="daily-signal">
+              <span><strong>{remaining.length}</strong> remaining</span>
+              <span><strong>{finishedCount}</strong> finished</span>
+              <span><strong>{scheduledToday.length ? Math.round((finishedCount / scheduledToday.length) * 100) : 0}%</strong> today</span>
+              <i>{streak} day streak</i>
+            </div>
+            <div className="daily-list-head">
+              <span>Today&apos;s rhythm</span>
+              <em>{scheduledToday.length} scheduled</em>
+            </div>
+            {loading ? (
+              <div className="loading-lines"><span /><span /><span /></div>
+            ) : remaining.length ? (
+              <div className="daily-list">
+                {remaining.map((item, index) => (
+                  <article
+                    className={`daily-row ${departingId === item.id ? "departing" : ""}`}
+                    key={item.id}
+                  >
+                    <button
+                      type="button"
+                      className="daily-check"
+                      aria-label={`Complete ${item.content}`}
+                      onClick={() => complete(item)}
+                    >
+                      <span />
+                    </button>
+                    <span className="daily-row-index">{String(index + 1).padStart(2, "0")}</span>
+                    <div className="daily-row-copy">
+                      <strong>{item.content}</strong>
+                      <small>{dailyScheduleLabel(item)}</small>
+                    </div>
+                    <div className="daily-row-signals">
+                      {item.note && <span title={item.note}>N</span>}
+                      {item.links.length > 0 && (
+                        <a href={item.links[0]} target="_blank" rel="noreferrer" title="Open first link">⌁</a>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="daily-edit"
+                      onClick={() => {
+                        setEditorItem(item);
+                        setEditorOpen(true);
+                      }}
+                    >
+                      Edit
+                    </button>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="daily-clear">
+                <span aria-hidden="true">✓</span>
+                <strong>{scheduledToday.length ? "Daily rhythm complete." : "Nothing scheduled today."}</strong>
+                <p>{scheduledToday.length ? "Everything returns on its next scheduled day." : "Add a daily or adjust its active weekdays."}</p>
+              </div>
+            )}
+          </div>
+
+          <aside className="daily-manage">
+            <div className="daily-manage-head">
+              <span>Routine file</span>
+              <em>{items.length}</em>
+            </div>
+            {items.map((item) => (
+              <div className="daily-manage-row" key={`manage-${item.id}`}>
+                <button
+                  type="button"
+                  onDoubleClick={() => {
+                    setEditorItem(item);
+                    setEditorOpen(true);
+                  }}
+                  onClick={() => {
+                    setEditorItem(item);
+                    setEditorOpen(true);
+                  }}
+                >
+                  <strong>{item.content}</strong>
+                  <small>{dailyScheduleLabel(item)}</small>
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  aria-label={`Delete ${item.content}`}
+                  onClick={() => void deleteItem(item)}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </aside>
+        </div>
+      ) : (
+        <div className="daily-tracker">
+          <div className="daily-tracker-metrics">
+            <div><span>Completion</span><strong>{completionRate}%</strong><em>last 26 weeks</em></div>
+            <div><span>Current streak</span><strong>{streak}</strong><em>scheduled days</em></div>
+            <div><span>Checks logged</span><strong>{totalFinished}</strong><em>of {totalDue}</em></div>
+          </div>
+          <section className="daily-heatmap-panel">
+            <div className="daily-tracker-head">
+              <div><span>Consistency field</span><strong>26 weeks</strong></div>
+              <div className="daily-heatmap-key"><span>Less</span><i /><i className="level-1" /><i className="level-2" /><i className="level-3" /><i className="level-4" /><span>More</span></div>
+            </div>
+            <div className="daily-heatmap" aria-label="Daily completion heatmap">
+              {trackerDays.map((day) => {
+                const level = day.ratio < 0 ? "off" : day.ratio === 0 ? "level-0" : day.ratio < .4 ? "level-1" : day.ratio < .7 ? "level-2" : day.ratio < 1 ? "level-3" : "level-4";
+                return (
+                  <span
+                    className={level}
+                    key={day.key}
+                    title={`${fullDateLabel(day.key)} — ${day.finished}/${day.eligible} completed`}
+                  />
+                );
+              })}
+            </div>
+          </section>
+          <section className="daily-performance">
+            <div className="daily-list-head"><span>By daily</span><em>completion history</em></div>
+            {items.map((item) => {
+              const eligible = trackerDays.filter((day) => isDailyScheduled(item, day.key));
+              const checked = eligible.filter((day) => completions.some((completion) => completion.dailyId === item.id && completion.completionDate === day.key)).length;
+              const rate = eligible.length ? Math.round((checked / eligible.length) * 100) : 0;
+              return (
+                <button
+                  type="button"
+                  className="daily-performance-row"
+                  key={`performance-${item.id}`}
+                  onClick={() => {
+                    setEditorItem(item);
+                    setEditorOpen(true);
+                  }}
+                >
+                  <span><strong>{item.content}</strong><small>{checked} of {eligible.length} scheduled days</small></span>
+                  <i><span style={{ width: `${rate}%` }} /></i>
+                  <em>{rate}%</em>
+                </button>
+              );
+            })}
+          </section>
+        </div>
+      )}
+
+      {editorOpen && (
+        <DailyEditor
+          item={editorItem}
+          onClose={() => setEditorOpen(false)}
+          onSave={async (draft) => {
+            await saveItem(editorItem?.id ?? null, draft);
+            setEditorOpen(false);
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+function DailyEditor({
+  item,
+  onClose,
+  onSave,
+}: {
+  item: DailyItem | null;
+  onClose: () => void;
+  onSave: (draft: DailyDraft) => Promise<void>;
+}) {
+  const [content, setContent] = useState(item?.content ?? "");
+  const [note, setNote] = useState(item?.note ?? "");
+  const [links, setLinks] = useState((item?.links ?? []).join("\n"));
+  const [weekdayMask, setWeekdayMask] = useState(item?.weekdayMask ?? 127);
+  const [startDate, setStartDate] = useState(item?.startDate ?? "");
+  const [endDate, setEndDate] = useState(item?.endDate ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    if (!content.trim()) return;
+    if (startDate && endDate && endDate < startDate) {
+      setError("The end date must follow the start date.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave({
+        content: content.trim(),
+        note: note.trim(),
+        links: links.split(/\n|,/).map((link) => link.trim()).filter(Boolean),
+        weekdayMask,
+        startDate: startDate || null,
+        endDate: endDate || null,
+      });
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Daily could not be saved.");
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="daily-editor-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
+      <form className="daily-editor" onSubmit={submit}>
+        <div className="daily-editor-head">
+          <div><span>{item ? "Edit daily" : "New daily"}</span><strong>Set the rhythm.</strong></div>
+          <button type="button" aria-label="Close daily editor" onClick={onClose}>×</button>
+        </div>
+        <label><span>Daily</span><input autoFocus value={content} onChange={(event) => setContent(event.target.value)} placeholder="Read a book" /></label>
+        <fieldset>
+          <legend>Active days</legend>
+          <div className="daily-weekdays">
+            {weekdayLabels.map((day, index) => {
+              const enabled = (weekdayMask & (1 << index)) !== 0;
+              return (
+                <button
+                  type="button"
+                  className={enabled ? "active" : ""}
+                  aria-pressed={enabled}
+                  key={day}
+                  onClick={() => {
+                    const next = enabled ? weekdayMask & ~(1 << index) : weekdayMask | (1 << index);
+                    if (next) setWeekdayMask(next);
+                  }}
+                >
+                  {day.slice(0, 1)}
+                </button>
+              );
+            })}
+          </div>
+        </fieldset>
+        <div className="daily-date-range">
+          <label><span>Starts</span><input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label>
+          <i aria-hidden="true">→</i>
+          <label><span>Ends</span><input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label>
+        </div>
+        <small className="daily-date-hint">Leave dates open for a permanent daily. Add both for a temporary one.</small>
+        <label><span>Note</span><textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Optional context" /></label>
+        <label><span>Links</span><textarea value={links} onChange={(event) => setLinks(event.target.value)} placeholder="One link per line" /></label>
+        {error && <p className="daily-error">{error}</p>}
+        <button className="daily-editor-save" type="submit" disabled={saving || !content.trim()}>{saving ? "Saving…" : item ? "Save daily" : "Create daily"}<span>→</span></button>
+      </form>
+    </div>
+  );
+}
+
 function AgendaView({
   items,
   updateItem,
   openOriginal,
   onCapture,
   zoomPreferenceKey,
+  authenticatedFetch,
 }: {
   items: Item[];
   updateItem: (id: string, patch: Patch) => void;
   openOriginal: (item: Item) => void;
   onCapture: (value: string) => void;
   zoomPreferenceKey: string;
+  authenticatedFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 }) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -1897,8 +2515,17 @@ function AgendaView({
   );
   const [selectedDate, setSelectedDate] = useState(todayKey);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [selectedGoogleEventId, setSelectedGoogleEventId] = useState<string | null>(null);
   const [agendaCapture, setAgendaCapture] = useState("");
   const [agendaZoom, setAgendaZoom] = useState(1);
+  const [googleEvents, setGoogleEvents] = useState<GoogleCalendarEvent[]>([]);
+  const [googleCalendar, setGoogleCalendar] = useState({
+    configured: true,
+    connected: false,
+    calendarEmail: "",
+    loading: true,
+    error: "",
+  });
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -1966,6 +2593,16 @@ function AgendaView({
     return grouped;
   }, [dueItems]);
 
+  const googleEventsByDate = useMemo(() => {
+    const grouped = new Map<string, GoogleCalendarEvent[]>();
+    for (const event of googleEvents) {
+      const key = event.start.slice(0, 10);
+      if (!key) continue;
+      grouped.set(key, [...(grouped.get(key) ?? []), event]);
+    }
+    return grouped;
+  }, [googleEvents]);
+
   const calendarDays = useMemo(() => {
     const first = new Date(
       monthCursor.getFullYear(),
@@ -1982,9 +2619,82 @@ function AgendaView({
     });
   }, [monthCursor]);
 
+  const loadGoogleCalendar = useCallback(async () => {
+    const first = new Date(monthCursor.getFullYear(), monthCursor.getMonth(), 1);
+    first.setDate(first.getDate() - 8);
+    const last = new Date(monthCursor.getFullYear(), monthCursor.getMonth() + 1, 1);
+    last.setDate(last.getDate() + 8);
+    try {
+      const response = await authenticatedFetch(
+        `/api/calendar/google?from=${dateKey(first)}&to=${dateKey(last)}`,
+        { cache: "no-store" },
+      );
+      const result = (await response.json()) as {
+        configured?: boolean;
+        connected?: boolean;
+        calendarEmail?: string;
+        events?: GoogleCalendarEvent[];
+        error?: string;
+      };
+      setGoogleEvents(result.events ?? []);
+      setGoogleCalendar({
+        configured: result.configured !== false,
+        connected: Boolean(result.connected),
+        calendarEmail: result.calendarEmail ?? "",
+        loading: false,
+        error: result.error ?? "",
+      });
+    } catch {
+      setGoogleCalendar((current) => ({
+        ...current,
+        loading: false,
+        error: "Google Calendar is temporarily unavailable.",
+      }));
+    }
+  }, [authenticatedFetch, monthCursor]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      void loadGoogleCalendar();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [loadGoogleCalendar]);
+
+  const connectGoogleCalendar = async () => {
+    setGoogleCalendar((current) => ({ ...current, loading: true, error: "" }));
+    const response = await authenticatedFetch("/api/calendar/google", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "begin" }),
+    });
+    const result = (await response.json()) as { url?: string; error?: string };
+    if (!response.ok || !result.url) {
+      setGoogleCalendar((current) => ({
+        ...current,
+        loading: false,
+        error: result.error ?? "Google Calendar could not start connecting.",
+      }));
+      return;
+    }
+    window.location.assign(result.url);
+  };
+
+  const disconnectGoogleCalendar = async () => {
+    if (!window.confirm("Disconnect Google Calendar from Ink & Iron?")) return;
+    const response = await authenticatedFetch("/api/calendar/google", { method: "DELETE" });
+    if (!response.ok) return;
+    setGoogleEvents([]);
+    setSelectedGoogleEventId(null);
+    setGoogleCalendar((current) => ({ ...current, connected: false, calendarEmail: "" }));
+  };
+
   const selectedDayItems = eventsByDate.get(selectedDate) ?? [];
+  const selectedDayGoogleEvents = googleEventsByDate.get(selectedDate) ?? [];
   const selectedItem = selectedItemId
     ? items.find((item) => item.id === selectedItemId) ?? null
+    : null;
+  const selectedGoogleEvent = selectedGoogleEventId
+    ? googleEvents.find((event) => event.id === selectedGoogleEventId) ?? null
     : null;
   const overdueCount = dueItems.filter(
     (item) => item.dueDate && item.dueDate < todayKey,
@@ -2001,6 +2711,9 @@ function AgendaView({
   const selectDate = (key: string) => {
     setSelectedDate(key);
     setSelectedItemId(eventsByDate.get(key)?.[0]?.id ?? null);
+    setSelectedGoogleEventId(
+      eventsByDate.get(key)?.length ? null : googleEventsByDate.get(key)?.[0]?.id ?? null,
+    );
   };
 
   const moveMonth = (amount: number) => {
@@ -2012,6 +2725,7 @@ function AgendaView({
     setMonthCursor(next);
     setSelectedDate(dateKey(next));
     setSelectedItemId(eventsByDate.get(dateKey(next))?.[0]?.id ?? null);
+    setSelectedGoogleEventId(null);
   };
 
   const goToday = () => {
@@ -2091,12 +2805,46 @@ function AgendaView({
             +
           </button>
         </div>
-        <div className="agenda-connections" aria-label="Future calendar connections">
-          <span>Calendar links</span>
-          <i>Google · Apple · Outlook</i>
-          <em>Soon</em>
+        <div className={`agenda-connections ${googleCalendar.connected ? "connected" : ""}`}>
+          <button
+            type="button"
+            className="google-calendar-connect"
+            disabled={googleCalendar.loading}
+            title={googleCalendar.calendarEmail || googleCalendar.error || "Connect Google Calendar"}
+            onClick={() => void (googleCalendar.connected ? loadGoogleCalendar() : connectGoogleCalendar())}
+          >
+            <span aria-hidden="true">G</span>
+            <strong>
+              {googleCalendar.loading
+                ? "Calendar…"
+                : googleCalendar.connected
+                  ? "Google synced"
+                  : googleCalendar.configured
+                    ? "Connect Google"
+                    : "Google setup"}
+            </strong>
+            <i aria-hidden="true">{googleCalendar.connected ? "●" : "↗"}</i>
+          </button>
+          {googleCalendar.connected && (
+            <button
+              type="button"
+              className="google-calendar-disconnect"
+              aria-label="Disconnect Google Calendar"
+              title="Disconnect Google Calendar"
+              onClick={() => void disconnectGoogleCalendar()}
+            >
+              ×
+            </button>
+          )}
         </div>
       </div>
+
+      {googleCalendar.error && (
+        <div className="agenda-calendar-notice" role="status">
+          <span>{googleCalendar.error}</span>
+          {!googleCalendar.configured && <em>OAuth credentials are required once to activate it.</em>}
+        </div>
+      )}
 
       <div className="agenda-ticker" aria-label="Agenda summary">
         <span><strong>{overdueCount}</strong> overdue</span>
@@ -2132,13 +2880,15 @@ function AgendaView({
               {calendarDays.map((day) => {
                 const key = dateKey(day);
                 const dayItems = eventsByDate.get(key) ?? [];
+                const dayGoogleEvents = googleEventsByDate.get(key) ?? [];
+                const entryCount = dayItems.length + dayGoogleEvents.length;
                 const outside = day.getMonth() !== monthCursor.getMonth();
                 return (
                   <div
                     className={`agenda-day ${outside ? "outside" : ""} ${key === todayKey ? "today" : ""} ${key === selectedDate ? "selected" : ""}`}
                     role="button"
                     tabIndex={0}
-                    aria-label={`${fullDateLabel(key)}, ${dayItems.length} deadlines`}
+                    aria-label={`${fullDateLabel(key)}, ${entryCount} calendar entries`}
                     key={key}
                     onClick={() => selectDate(key)}
                     onKeyDown={(event) => {
@@ -2161,12 +2911,31 @@ function AgendaView({
                             event.stopPropagation();
                             setSelectedDate(key);
                             setSelectedItemId(item.id);
+                            setSelectedGoogleEventId(null);
                           }}
                         >
                           {item.content}
                         </button>
                       ))}
-                      {dayItems.length > 3 && <span className="agenda-event-more">+{dayItems.length - 3}</span>}
+                      {dayGoogleEvents
+                        .slice(0, Math.max(0, 3 - dayItems.length))
+                        .map((event) => (
+                          <button
+                            type="button"
+                            className="agenda-event google-event"
+                            key={`google-${event.id}`}
+                            title={event.title}
+                            onClick={(clickEvent) => {
+                              clickEvent.stopPropagation();
+                              setSelectedDate(key);
+                              setSelectedItemId(null);
+                              setSelectedGoogleEventId(event.id);
+                            }}
+                          >
+                            {event.title}
+                          </button>
+                        ))}
+                      {entryCount > 3 && <span className="agenda-event-more">+{entryCount - 3}</span>}
                     </div>
                   </div>
                 );
@@ -2178,26 +2947,51 @@ function AgendaView({
             <div className="agenda-day-title">
               <span>Selected day</span>
               <strong>{fullDateLabel(selectedDate)}</strong>
-              <em>{selectedDayItems.length} {selectedDayItems.length === 1 ? "deadline" : "deadlines"}</em>
+              <em>
+                {selectedDayItems.length + selectedDayGoogleEvents.length}{" "}
+                {selectedDayItems.length + selectedDayGoogleEvents.length === 1 ? "entry" : "entries"}
+              </em>
             </div>
             <div className="agenda-day-list">
-              {selectedDayItems.length ? selectedDayItems.map((item) => (
+              {selectedDayItems.length || selectedDayGoogleEvents.length ? <>
+                {selectedDayItems.map((item) => (
                 <button
                   type="button"
                   className={selectedItemId === item.id ? "active" : ""}
                   key={item.id}
-                  onClick={() => setSelectedItemId(item.id)}
+                  onClick={() => {
+                    setSelectedItemId(item.id);
+                    setSelectedGoogleEventId(null);
+                  }}
                 >
                   <i className={`priority-dot priority-${item.priority}`} />
                   <span>{item.content}<small>{sectionLabel(item)}</small></span>
                   <em>›</em>
                 </button>
-              )) : (
+                ))}
+                {selectedDayGoogleEvents.map((event) => (
+                  <button
+                    type="button"
+                    className={selectedGoogleEventId === event.id ? "active google" : "google"}
+                    key={`google-list-${event.id}`}
+                    onClick={() => {
+                      setSelectedItemId(null);
+                      setSelectedGoogleEventId(event.id);
+                    }}
+                  >
+                    <i className="google-event-dot">G</i>
+                    <span>{event.title}<small>Google Calendar</small></span>
+                    <em>›</em>
+                  </button>
+                ))}
+              </> : (
                 <p>Nothing scheduled for this day.</p>
               )}
             </div>
             {selectedItem ? (
               <AgendaInspector key={selectedItem.id} item={selectedItem} updateItem={updateItem} openOriginal={openOriginal} />
+            ) : selectedGoogleEvent ? (
+              <GoogleCalendarInspector event={selectedGoogleEvent} />
             ) : undatedPriority.length > 0 ? (
               <div className="agenda-undated">
                 <span>Needs a date</span>
@@ -2283,6 +3077,34 @@ function AgendaView({
         </div>
       )}
     </section>
+  );
+}
+
+function GoogleCalendarInspector({ event }: { event: GoogleCalendarEvent }) {
+  const timeLabel = event.allDay
+    ? "All day"
+    : new Date(event.start).toLocaleTimeString(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+      });
+  return (
+    <div className="agenda-inspector google-inspector">
+      <div className="agenda-inspector-label">
+        <span>Google Calendar</span>
+        <i>Synced</i>
+      </div>
+      <strong className="google-inspector-title">{event.title}</strong>
+      <dl>
+        <div><dt>When</dt><dd>{timeLabel}</dd></div>
+        {event.location && <div><dt>Where</dt><dd>{event.location}</dd></div>}
+      </dl>
+      {event.description && <p>{event.description}</p>}
+      {event.htmlLink && (
+        <a href={event.htmlLink} target="_blank" rel="noreferrer">
+          Open in Google Calendar <span aria-hidden="true">↗</span>
+        </a>
+      )}
+    </div>
   );
 }
 
