@@ -1140,7 +1140,7 @@ export default function Home() {
   if (!authReady) {
     return (
       <main className="auth-shell auth-loading" aria-label="Loading account">
-        <span className="auth-forge-mark">I&amp;I</span>
+        <span className="auth-forge-mark" aria-hidden="true" />
       </main>
     );
   }
@@ -1723,10 +1723,7 @@ function AuthScreen() {
   return (
     <main className="auth-shell">
       <header className="auth-topbar">
-        <div className="auth-brand">
-          <span>I&amp;I</span>
-          <strong>Ink <i>&amp;</i> Iron</strong>
-        </div>
+        <span className="auth-brand-lockup" role="img" aria-label="Ink & Iron" />
         <button
           type="button"
           onClick={() => switchMode(mode === "login" ? "create" : "login")}
@@ -1736,12 +1733,20 @@ function AuthScreen() {
       </header>
 
       <section className="auth-stage">
-        <div className="auth-index" aria-hidden="true">
-          {mode === "login" ? "01" : createStep === 1 ? "02" : "03"}
+        <div className="auth-identity" aria-hidden="true">
+          <span className="auth-identity-mark" />
+          <div className="auth-identity-meta">
+            <span>{mode === "login" ? "01" : createStep === 1 ? "02" : "03"}</span>
+            <i />
+            <small>Private workspace</small>
+          </div>
         </div>
         <div className="auth-card">
           <div className="auth-card-head">
-            <small>{mode === "login" ? "RETURN" : "NEW WORKSPACE"}</small>
+            <div className="auth-card-kicker">
+              <small>{mode === "login" ? "RETURN" : "NEW WORKSPACE"}</small>
+              <span aria-hidden="true" />
+            </div>
             <h1>
               {mode === "login"
                 ? "Open your workspace."

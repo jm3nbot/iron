@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Ink&Iron Dashboard",
+  title: "Ink&Iron",
   description:
     "A quiet place to capture thoughts, choose what matters, and move.",
   icons: {

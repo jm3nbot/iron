@@ -9,7 +9,7 @@ test("renders the Ink & Iron workspace shell", async () => {
     readFile(new URL("app/layout.tsx", root), "utf8"),
     readFile(new URL("app/page.tsx", root), "utf8"),
   ]);
-  assert.match(layout, /Ink&Iron Dashboard/);
+  assert.match(layout, /title: "Ink&Iron"/);
   assert.match(page, /aria-label="Agenda"/);
   assert.match(page, /Capture a thought…/i);
   assert.match(page, /Paste a link…/i);
