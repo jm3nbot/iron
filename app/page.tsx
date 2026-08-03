@@ -70,6 +70,7 @@ const QUEUE_KEY = "ink-and-iron-pending-v1";
 const SORT_KEY = "ink-and-iron-sort-mode";
 const GROUP_ORDER_KEY = "ink-and-iron-group-order";
 const LIBRARY_FLAT_KEY = "ink-and-iron-library-flat";
+const AGENDA_ZOOM_KEY = "ink-and-iron-agenda-zoom";
 const capturePhrases = [
   "Capture a thought…",
   "Paste a link…",
@@ -1189,9 +1190,8 @@ export default function Home() {
       <section className="canvas">
         <header className="topbar">
           <div className="topbar-title">
-            <strong>Ink <span>&amp;</span> Iron</strong>
-            <i>/</i>
-            <em>{viewTitle}</em>
+            <span aria-hidden="true">{"//"}</span>
+            <strong>{viewTitle}</strong>
           </div>
           <div className="topbar-tools">
             {activeView !== "agenda" && (
@@ -1282,6 +1282,7 @@ export default function Home() {
               updateItem={updateItem}
               openOriginal={openOriginalItem}
               onCapture={(value) => void createItem(value, "now")}
+              zoomPreferenceKey={`${AGENDA_ZOOM_KEY}:${session.user.id}`}
             />
           ) : activeItems.length === 0 ? (
             <div className="empty-state">
@@ -1874,11 +1875,13 @@ function AgendaView({
   updateItem,
   openOriginal,
   onCapture,
+  zoomPreferenceKey,
 }: {
   items: Item[];
   updateItem: (id: string, patch: Patch) => void;
   openOriginal: (item: Item) => void;
   onCapture: (value: string) => void;
+  zoomPreferenceKey: string;
 }) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -1890,6 +1893,28 @@ function AgendaView({
   const [selectedDate, setSelectedDate] = useState(todayKey);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [agendaCapture, setAgendaCapture] = useState("");
+  const [agendaZoom, setAgendaZoom] = useState(1);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const stored = Number(localStorage.getItem(zoomPreferenceKey));
+      if (stored >= 0.8 && stored <= 1.3) setAgendaZoom(stored);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [zoomPreferenceKey]);
+
+  const changeAgendaZoom = (amount: number) => {
+    setAgendaZoom((current) => {
+      const next = Math.max(0.8, Math.min(1.3, Math.round((current + amount) * 10) / 10));
+      localStorage.setItem(zoomPreferenceKey, String(next));
+      return next;
+    });
+  };
+
+  const resetAgendaZoom = () => {
+    setAgendaZoom(1);
+    localStorage.setItem(zoomPreferenceKey, "1");
+  };
 
   const active = useMemo(
     () => items.filter((item) => !item.archived && !item.completed),
@@ -1990,7 +2015,11 @@ function AgendaView({
   };
 
   return (
-    <section className="agenda-shell" aria-label="Agenda">
+    <section
+      className="agenda-shell"
+      aria-label="Agenda"
+      style={{ zoom: agendaZoom } as React.CSSProperties}
+    >
       <div className="agenda-heading">
         <div className="agenda-tabs" role="tablist" aria-label="Agenda views">
           <button
@@ -2030,6 +2059,33 @@ function AgendaView({
           />
           <button type="submit" aria-label="Add bullet point">↵</button>
         </form>
+        <div className="agenda-zoom" aria-label="Agenda zoom controls">
+          <button
+            type="button"
+            aria-label="Zoom Agenda out"
+            disabled={agendaZoom <= 0.8}
+            onClick={() => changeAgendaZoom(-0.1)}
+          >
+            −
+          </button>
+          <button
+            type="button"
+            className="agenda-zoom-value"
+            aria-label="Reset Agenda zoom"
+            title="Reset to 100%"
+            onClick={resetAgendaZoom}
+          >
+            {Math.round(agendaZoom * 100)}%
+          </button>
+          <button
+            type="button"
+            aria-label="Zoom Agenda in"
+            disabled={agendaZoom >= 1.3}
+            onClick={() => changeAgendaZoom(0.1)}
+          >
+            +
+          </button>
+        </div>
         <div className="agenda-connections" aria-label="Future calendar connections">
           <span>Calendar links</span>
           <i>Google · Apple · Outlook</i>

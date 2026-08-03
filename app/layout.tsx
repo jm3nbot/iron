@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Ink & Iron — Personal Command Center",
+  title: "Ink&Iron Dashboard",
   description:
     "A quiet place to capture thoughts, choose what matters, and move.",
   icons: {

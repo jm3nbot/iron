@@ -420,32 +420,21 @@ select:focus-visible {
 
 .topbar-title {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  align-items: center;
+  gap: 7px;
   white-space: nowrap;
+}
+
+.topbar-title > span {
+  color: var(--copper);
+  font: 650 15px/1 var(--serif);
+  letter-spacing: -.08em;
 }
 
 .topbar-title strong {
   color: var(--paper);
-  font: 600 15px/1 var(--serif);
-  letter-spacing: -.01em;
-}
-
-.topbar-title strong span {
-  color: var(--copper);
-}
-
-.topbar-title i {
-  color: var(--steel-light);
-  font: 12px/1 var(--serif);
-}
-
-.topbar-title em {
-  color: var(--paper-muted);
-  font-size: 9px;
-  font-style: normal;
-  font-weight: 650;
-  letter-spacing: .14em;
+  font: 650 16px/1 var(--serif);
+  letter-spacing: .08em;
   text-transform: uppercase;
 }
 
@@ -1453,7 +1442,7 @@ select:focus-visible {
 
 .agenda-heading {
   display: grid;
-  grid-template-columns: auto minmax(190px, 1fr) auto;
+  grid-template-columns: auto minmax(160px, 1fr) auto auto;
   align-items: center;
   gap: 9px;
   padding: 0 2px 8px;
@@ -1552,6 +1541,49 @@ select:focus-visible {
 .agenda-capture button:hover {
   background: rgba(166,95,56,.08);
   color: var(--copper-light);
+}
+
+.agenda-zoom {
+  display: inline-grid;
+  grid-template-columns: 23px 39px 23px;
+  align-items: center;
+  height: 29px;
+  padding: 2px;
+  border: 1px solid var(--steel);
+  border-radius: 3px;
+  background: rgba(251,250,246,.7);
+}
+
+.agenda-zoom button {
+  display: grid;
+  place-items: center;
+  height: 23px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--paper-muted);
+  cursor: pointer;
+  font-size: 11px;
+  transition: color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.agenda-zoom button:hover:not(:disabled) {
+  background: rgba(166,95,56,.08);
+  color: var(--copper-light);
+  transform: translateY(-1px);
+}
+
+.agenda-zoom button:disabled {
+  cursor: default;
+  opacity: .28;
+}
+
+.agenda-zoom .agenda-zoom-value {
+  color: var(--paper-faint);
+  font-size: 7px;
+  font-weight: 680;
+  letter-spacing: .04em;
 }
 
 .agenda-connections {
@@ -2814,7 +2846,7 @@ select:focus-visible {
   }
 
   .topbar-title strong {
-    font-size: 12px;
+    font-size: 14px;
   }
 
   .search {
@@ -2882,6 +2914,10 @@ select:focus-visible {
   }
 
   .agenda-ticker > i {
+    display: none;
+  }
+
+  .agenda-connections i {
     display: none;
   }
 }
@@ -2956,11 +2992,6 @@ select:focus-visible {
 
   .account-trigger {
     padding: 3px;
-  }
-
-  .topbar-title i,
-  .topbar-title em {
-    display: none;
   }
 
   .capture {

@@ -9,8 +9,8 @@ test("renders the Ink & Iron workspace shell", async () => {
     readFile(new URL("app/layout.tsx", root), "utf8"),
     readFile(new URL("app/page.tsx", root), "utf8"),
   ]);
-  assert.match(layout, /Ink & Iron — Personal Command Center/);
-  assert.match(page, /Personal command center/i);
+  assert.match(layout, /Ink&Iron Dashboard/);
+  assert.match(page, /aria-label="Agenda"/);
   assert.match(page, /Capture a thought…/i);
   assert.match(page, /Paste a link…/i);
   assert.doesNotMatch(`${layout}\n${page}`, /codex-preview|react-loading-skeleton/i);
@@ -41,5 +41,6 @@ test("keeps the site lightweight with authenticated Supabase persistence", async
   assert.match(migration, /supabase_realtime/);
   assert.match(fallback, /Ink &amp; Iron/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
-  assert.doesNotMatch(css, /url\(/);
+  assert.doesNotMatch(css, /url\(["']?https?:/);
+  assert.match(css, /\/brand\/ink-and-iron-lockup-transparent\.png/);
 });
