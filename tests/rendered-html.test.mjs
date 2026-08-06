@@ -17,7 +17,7 @@ test("renders the Ink & Iron workspace shell", async () => {
 });
 
 test("keeps the site lightweight with authenticated Supabase persistence", async () => {
-  const [page, css, hosting, packageJson, vercel, vite, migration, dailyMigration, dailyRoute, calendarRoute, fallback] = await Promise.all([
+  const [page, css, hosting, packageJson, vercel, vite, migration, dailyMigration, featureMigration, dailyRoute, quickLinksRoute, calendarRoute, fallback] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),
     readFile(new URL("app/globals.css", root), "utf8"),
     readFile(new URL(".openai/hosting.json", root), "utf8"),
@@ -26,7 +26,9 @@ test("keeps the site lightweight with authenticated Supabase persistence", async
     readFile(new URL("vite.config.ts", root), "utf8"),
     readFile(new URL("supabase/migrations/202607300001_auth_workspace.sql", root), "utf8"),
     readFile(new URL("supabase/migrations/20260803124401_daily_and_google_calendar.sql", root), "utf8"),
+    readFile(new URL("supabase/migrations/20260806215241_weekly_daily_targets_and_quick_links.sql", root), "utf8"),
     readFile(new URL("app/api/daily/route.ts", root), "utf8"),
+    readFile(new URL("app/api/quick-links/route.ts", root), "utf8"),
     readFile(new URL("app/api/calendar/google/route.ts", root), "utf8"),
     readFile(new URL("public/fallback/index.html", root), "utf8"),
   ]);
@@ -46,6 +48,13 @@ test("keeps the site lightweight with authenticated Supabase persistence", async
   assert.match(dailyMigration, /google_calendar_connections/);
   assert.match(dailyMigration, /enable row level security/);
   assert.match(dailyRoute, /completion_date/);
+  assert.match(dailyRoute, /weekly_target/);
+  assert.match(featureMigration, /weekly_target/);
+  assert.match(featureMigration, /quick_links/);
+  assert.match(featureMigration, /enable row level security/);
+  assert.match(quickLinksRoute, /upsert/);
+  assert.match(page, /Quicklinks/);
+  assert.match(page, /Days per week/);
   assert.match(calendarRoute, /calendar\.events\.readonly/);
   assert.match(calendarRoute, /AES-GCM/);
   assert.match(fallback, /Ink &amp; Iron/);

@@ -9,6 +9,7 @@ type DailyRow = {
   note: string;
   links: string[];
   weekday_mask: number;
+  weekly_target: number | null;
   start_date: string | null;
   end_date: string | null;
   position: number;
@@ -30,6 +31,7 @@ function toDailyItem(row: DailyRow) {
     note: row.note,
     links: row.links ?? [],
     weekdayMask: row.weekday_mask,
+    weeklyTarget: row.weekly_target,
     startDate: row.start_date,
     endDate: row.end_date,
     position: row.position,
@@ -63,6 +65,12 @@ function cleanDate(value: unknown) {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
     ? value
     : null;
+}
+
+function cleanWeeklyTarget(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.max(1, Math.min(7, Math.round(value)));
 }
 
 async function requireUser(
@@ -176,6 +184,7 @@ export async function POST(request: Request) {
     note: typeof payload.note === "string" ? payload.note.trim() : "",
     links: cleanLinks(payload.links),
     weekday_mask: weekdayMask,
+    weekly_target: cleanWeeklyTarget(payload.weeklyTarget),
     start_date: startDate,
     end_date: endDate,
     position: (last?.position ?? -1) + 1,
@@ -202,6 +211,9 @@ export async function PATCH(request: Request) {
   if (Array.isArray(payload.links)) update.links = cleanLinks(payload.links);
   if (typeof payload.weekdayMask === "number") {
     update.weekday_mask = Math.max(1, Math.min(127, Math.round(payload.weekdayMask)));
+  }
+  if (payload.weeklyTarget === null || typeof payload.weeklyTarget === "number") {
+    update.weekly_target = cleanWeeklyTarget(payload.weeklyTarget);
   }
   if (payload.startDate === null || typeof payload.startDate === "string") {
     update.start_date = cleanDate(payload.startDate);

@@ -57,6 +57,7 @@ type DailyItem = {
   note: string;
   links: string[];
   weekdayMask: number;
+  weeklyTarget: number | null;
   startDate: string | null;
   endDate: string | null;
   position: number;
@@ -71,7 +72,14 @@ type DailyCompletion = {
   completedAt: string;
 };
 
-type DailyDraft = Pick<DailyItem, "content" | "note" | "links" | "weekdayMask" | "startDate" | "endDate">;
+type DailyDraft = Pick<DailyItem, "content" | "note" | "links" | "weekdayMask" | "weeklyTarget" | "startDate" | "endDate">;
+
+type QuickLink = {
+  slot: number;
+  label: string;
+  url: string;
+  updatedAt: string;
+};
 
 type GoogleCalendarEvent = {
   id: string;
@@ -178,13 +186,56 @@ function isDailyScheduled(item: DailyItem, key: string) {
   return (item.weekdayMask & (1 << weekday)) !== 0;
 }
 
-function dailyScheduleLabel(item: Pick<DailyItem, "weekdayMask" | "startDate" | "endDate">) {
+function dailyScheduleLabel(item: Pick<DailyItem, "weekdayMask" | "weeklyTarget" | "startDate" | "endDate">) {
   const activeDays = weekdayLabels.filter((_, day) => (item.weekdayMask & (1 << day)) !== 0);
   const days = activeDays.length === 7 ? "Every day" : activeDays.join(" · ");
-  if (item.startDate && item.endDate) return `${days} / ${item.startDate} → ${item.endDate}`;
-  if (item.startDate) return `${days} / from ${item.startDate}`;
-  if (item.endDate) return `${days} / through ${item.endDate}`;
-  return days;
+  const cadence = item.weeklyTarget ? `${item.weeklyTarget}× / week · ${days}` : days;
+  if (item.startDate && item.endDate) return `${cadence} / ${item.startDate} → ${item.endDate}`;
+  if (item.startDate) return `${cadence} / from ${item.startDate}`;
+  if (item.endDate) return `${cadence} / through ${item.endDate}`;
+  return cadence;
+}
+
+function weekBounds(key: string) {
+  const date = parseDateKey(key);
+  const day = date.getDay();
+  const start = new Date(date);
+  start.setDate(date.getDate() - ((day + 6) % 7));
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  return { start: dateKey(start), end: dateKey(end) };
+}
+
+function weeklyCompletionCount(item: DailyItem, completions: DailyCompletion[], key: string) {
+  const { start, end } = weekBounds(key);
+  return completions.filter(
+    (completion) =>
+      completion.dailyId === item.id &&
+      completion.completionDate >= start &&
+      completion.completionDate <= end,
+  ).length;
+}
+
+function isDailyDueOn(item: DailyItem, key: string, completions: DailyCompletion[]) {
+  if (!isDailyScheduled(item, key)) return false;
+  if (!item.weeklyTarget) return true;
+  const { start } = weekBounds(key);
+  const completedBefore = completions.filter(
+    (completion) =>
+      completion.dailyId === item.id &&
+      completion.completionDate >= start &&
+      completion.completionDate < key,
+  ).length;
+  return completedBefore < item.weeklyTarget;
+}
+
+function quickLinkInitials(label: string) {
+  return label
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
 }
 
 function sectionLabel(item: Item) {
@@ -265,6 +316,8 @@ export default function Home() {
   const [dailyItems, setDailyItems] = useState<DailyItem[]>([]);
   const [dailyCompletions, setDailyCompletions] = useState<DailyCompletion[]>([]);
   const [dailyLoading, setDailyLoading] = useState(true);
+  const [quickLinks, setQuickLinks] = useState<QuickLink[]>([]);
+  const [quickLinkSlot, setQuickLinkSlot] = useState<number | null>(null);
   const [activeView, setActiveView] = useState<View>("now");
   const [query, setQuery] = useState("");
   const [capture, setCapture] = useState("");
@@ -299,9 +352,7 @@ export default function Home() {
   const searchRef = useRef<HTMLInputElement | null>(null);
   const captureRef = useRef<HTMLInputElement | null>(null);
   const marqueeCleanupRef = useRef<(() => void) | null>(null);
-  const groupToggleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  const groupToggleTimerRef = useRef<number | null>(null);
 
   const userCacheKey = session ? `${CACHE_KEY}:${session.user.id}` : null;
   const userQueueKey = session ? `${QUEUE_KEY}:${session.user.id}` : null;
@@ -334,6 +385,13 @@ export default function Home() {
     setDailyCompletions(data.completions);
   }, [authenticatedFetch]);
 
+  const loadQuickLinks = useCallback(async () => {
+    const response = await authenticatedFetch("/api/quick-links", { cache: "no-store" });
+    if (!response.ok) throw new Error("Quicklinks load failed");
+    const data = (await response.json()) as { links: QuickLink[] };
+    setQuickLinks(data.links);
+  }, [authenticatedFetch]);
+
   const markSaved = useCallback(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => setSaveStatus("saved"), 350);
@@ -355,6 +413,7 @@ export default function Home() {
         setItems([]);
         setDailyItems([]);
         setDailyCompletions([]);
+        setQuickLinks([]);
         setUsername("");
         setAccountOpen(false);
       }
@@ -530,6 +589,34 @@ export default function Home() {
 
   useEffect(() => {
     if (!session) return;
+    let active = true;
+    const frame = window.requestAnimationFrame(() => {
+      void loadQuickLinks().catch(() => undefined);
+    });
+    const channel = supabase
+      .channel(`quick-links:${session.user.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "quick_links",
+          filter: `user_id=eq.${session.user.id}`,
+        },
+        () => {
+          if (active) void loadQuickLinks();
+        },
+      )
+      .subscribe();
+    return () => {
+      active = false;
+      window.cancelAnimationFrame(frame);
+      void supabase.removeChannel(channel);
+    };
+  }, [loadQuickLinks, session]);
+
+  useEffect(() => {
+    if (!session) return;
     const parameters = new URLSearchParams(window.location.search);
     if (!parameters.has("calendar")) return;
     const frame = window.requestAnimationFrame(() => {
@@ -650,14 +737,35 @@ export default function Home() {
 
   const updateItem = useCallback(
     (id: string, patch: Patch) => {
+      const target = items.find((item) => item.id === id);
+      let effectivePatch = patch;
+      if (target && patch.completed === true && !target.completed) {
+        const siblingPositions = items
+          .filter(
+            (item) =>
+              item.id !== id &&
+              item.section === target.section &&
+              item.groupName === target.groupName &&
+              item.archived === target.archived &&
+              item.parentId === target.parentId,
+          )
+          .map((item) => item.position);
+        effectivePatch = {
+          ...patch,
+          priority: "none",
+          position: Math.max(-1, ...siblingPositions) + 1,
+        };
+      }
       setItems((current) => {
-        const next = current.map((item) => (item.id === id ? { ...item, ...patch } : item));
+        const next = current.map((item) =>
+          item.id === id ? { ...item, ...effectivePatch } : item,
+        );
         cacheItems(next);
         return next;
       });
-      void sendPatch(id, patch);
+      void sendPatch(id, effectivePatch);
     },
-    [cacheItems, sendPatch],
+    [cacheItems, items, sendPatch],
   );
 
   const createItem = useCallback(
@@ -904,6 +1012,39 @@ export default function Home() {
       if (!response.ok) void loadDaily();
     },
     [authenticatedFetch, loadDaily],
+  );
+
+  const saveQuickLink = useCallback(
+    async (slot: number, label: string, url: string) => {
+      const response = await authenticatedFetch("/api/quick-links", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slot, label, url }),
+      });
+      const result = (await response.json()) as { link?: QuickLink; error?: string };
+      if (!response.ok || !result.link) {
+        throw new Error(result.error ?? "Quicklink could not be saved.");
+      }
+      setQuickLinks((current) => [
+        ...current.filter((link) => link.slot !== slot),
+        result.link!,
+      ].sort((left, right) => left.slot - right.slot));
+    },
+    [authenticatedFetch],
+  );
+
+  const deleteQuickLink = useCallback(
+    async (slot: number) => {
+      const response = await authenticatedFetch("/api/quick-links", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slot }),
+      });
+      const result = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Quicklink could not be cleared.");
+      setQuickLinks((current) => current.filter((link) => link.slot !== slot));
+    },
+    [authenticatedFetch],
   );
 
   const activeItems = useMemo(() => {
@@ -1401,11 +1542,32 @@ export default function Home() {
           ))}
         </nav>
 
+        <QuickLinks
+          links={quickLinks}
+          onEdit={(slot) => setQuickLinkSlot(slot)}
+        />
+
         <button className="sidebar-toggle" onClick={toggleSidebar} aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}>
           <span aria-hidden="true" />
         </button>
         <button className="sidebar-resize" onPointerDown={resizeSidebar} aria-label="Resize sidebar" />
       </aside>
+
+      {quickLinkSlot !== null && (
+        <QuickLinkEditor
+          slot={quickLinkSlot}
+          link={quickLinks.find((entry) => entry.slot === quickLinkSlot) ?? null}
+          onClose={() => setQuickLinkSlot(null)}
+          onSave={async (label, url) => {
+            await saveQuickLink(quickLinkSlot, label, url);
+            setQuickLinkSlot(null);
+          }}
+          onDelete={async () => {
+            await deleteQuickLink(quickLinkSlot);
+            setQuickLinkSlot(null);
+          }}
+        />
+      )}
 
       <section className="canvas">
         <header className="topbar">
@@ -2121,6 +2283,123 @@ function AuthScreen() {
   );
 }
 
+function QuickLinks({
+  links,
+  onEdit,
+}: {
+  links: QuickLink[];
+  onEdit: (slot: number) => void;
+}) {
+  return (
+    <section className="quicklinks" aria-label="Quicklinks">
+      <div className="quicklinks-label">
+        <span>Quicklinks</span>
+        <em>04</em>
+      </div>
+      <div className="quicklinks-grid">
+        {[1, 2, 3, 4].map((slot) => {
+          const link = links.find((entry) => entry.slot === slot);
+          return (
+            <div className={`quicklink-slot ${link ? "filled" : "empty"}`} key={slot}>
+              {link ? (
+                <>
+                  <a href={link.url} target="_blank" rel="noreferrer" aria-label={`Open ${link.label}`}>
+                    <strong>{quickLinkInitials(link.label)}</strong>
+                    <span>{link.label}</span>
+                  </a>
+                  <button
+                    type="button"
+                    className="quicklink-edit"
+                    aria-label={`Edit ${link.label}`}
+                    onClick={() => onEdit(slot)}
+                  >
+                    ···
+                  </button>
+                </>
+              ) : (
+                <button type="button" className="quicklink-empty" onClick={() => onEdit(slot)} aria-label={`Configure Quicklink ${slot}`}>
+                  <strong>+</strong>
+                  <span>{String(slot).padStart(2, "0")}</span>
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function QuickLinkEditor({
+  slot,
+  link,
+  onClose,
+  onSave,
+  onDelete,
+}: {
+  slot: number;
+  link: QuickLink | null;
+  onClose: () => void;
+  onSave: (label: string, url: string) => Promise<void>;
+  onDelete: () => Promise<void>;
+}) {
+  const [label, setLabel] = useState(link?.label ?? "");
+  const [url, setUrl] = useState(link?.url ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    const candidate = /^https?:\/\//i.test(url.trim()) ? url.trim() : `https://${url.trim()}`;
+    if (!label.trim() || !isUrl(candidate)) {
+      setError("Add a name and a complete link.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(label.trim(), candidate);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Quicklink could not be saved.");
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="quicklink-editor-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
+      <form className="quicklink-editor" onSubmit={submit}>
+        <div className="quicklink-editor-head">
+          <div><span>Quicklink {String(slot).padStart(2, "0")}</span><strong>{link ? "Edit reference." : "Pin a reference."}</strong></div>
+          <button type="button" aria-label="Close Quicklink editor" onClick={onClose}>×</button>
+        </div>
+        <label><span>Name</span><input autoFocus maxLength={32} value={label} onChange={(event) => setLabel(event.target.value)} placeholder="UofT Hub" /></label>
+        <label><span>Link</span><input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://…" /></label>
+        {error && <p className="daily-error">{error}</p>}
+        <div className="quicklink-editor-actions">
+          {link && (
+            <button
+              type="button"
+              className="danger"
+              onClick={() => {
+                setSaving(true);
+                void onDelete().catch((deleteError) => {
+                  setError(deleteError instanceof Error ? deleteError.message : "Quicklink could not be cleared.");
+                  setSaving(false);
+                });
+              }}
+            >
+              Clear slot
+            </button>
+          )}
+          <button type="submit" className="primary" disabled={saving || !label.trim() || !url.trim()}>
+            {saving ? "Saving…" : "Save Quicklink"}<span>→</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function DailyView({
   items,
   completions,
@@ -2152,8 +2431,8 @@ function DailyView({
     [completions, today],
   );
   const scheduledToday = useMemo(
-    () => items.filter((item) => isDailyScheduled(item, today)),
-    [items, today],
+    () => items.filter((item) => isDailyDueOn(item, today, completions)),
+    [completions, items, today],
   );
   const remaining = scheduledToday.filter((item) => !completedToday.has(item.id));
   const finishedCount = scheduledToday.length - remaining.length;
@@ -2164,7 +2443,7 @@ function DailyView({
       const day = new Date(end);
       day.setDate(end.getDate() - (181 - index));
       const key = dateKey(day);
-      const eligible = items.filter((item) => isDailyScheduled(item, key));
+      const eligible = items.filter((item) => isDailyDueOn(item, key, completions));
       const finished = eligible.filter((item) =>
         completions.some(
           (completion) => completion.dailyId === item.id && completion.completionDate === key,
@@ -2279,6 +2558,11 @@ function DailyView({
                       <small>{dailyScheduleLabel(item)}</small>
                     </div>
                     <div className="daily-row-signals">
+                      {item.weeklyTarget && (
+                        <span className="weekly-progress" title={`${weeklyCompletionCount(item, completions, today)} of ${item.weeklyTarget} completed this week`}>
+                          {weeklyCompletionCount(item, completions, today)}/{item.weeklyTarget}
+                        </span>
+                      )}
                       {item.note && <span title={item.note}>N</span>}
                       {item.links.length > 0 && (
                         <a href={item.links[0]} target="_blank" rel="noreferrer" title="Open first link">⌁</a>
@@ -2367,7 +2651,7 @@ function DailyView({
           <section className="daily-performance">
             <div className="daily-list-head"><span>By daily</span><em>completion history</em></div>
             {items.map((item) => {
-              const eligible = trackerDays.filter((day) => isDailyScheduled(item, day.key));
+              const eligible = trackerDays.filter((day) => isDailyDueOn(item, day.key, completions));
               const checked = eligible.filter((day) => completions.some((completion) => completion.dailyId === item.id && completion.completionDate === day.key)).length;
               const rate = eligible.length ? Math.round((checked / eligible.length) * 100) : 0;
               return (
@@ -2417,6 +2701,7 @@ function DailyEditor({
   const [note, setNote] = useState(item?.note ?? "");
   const [links, setLinks] = useState((item?.links ?? []).join("\n"));
   const [weekdayMask, setWeekdayMask] = useState(item?.weekdayMask ?? 127);
+  const [weeklyTarget, setWeeklyTarget] = useState<number | null>(item?.weeklyTarget ?? null);
   const [startDate, setStartDate] = useState(item?.startDate ?? "");
   const [endDate, setEndDate] = useState(item?.endDate ?? "");
   const [saving, setSaving] = useState(false);
@@ -2437,6 +2722,7 @@ function DailyEditor({
         note: note.trim(),
         links: links.split(/\n|,/).map((link) => link.trim()).filter(Boolean),
         weekdayMask,
+        weeklyTarget,
         startDate: startDate || null,
         endDate: endDate || null,
       });
@@ -2454,6 +2740,33 @@ function DailyEditor({
           <button type="button" aria-label="Close daily editor" onClick={onClose}>×</button>
         </div>
         <label><span>Daily</span><input autoFocus value={content} onChange={(event) => setContent(event.target.value)} placeholder="Read a book" /></label>
+        <fieldset>
+          <legend>Days per week <em>optional</em></legend>
+          <div className="daily-weekly-targets">
+            <button
+              type="button"
+              className={weeklyTarget === null ? "active" : ""}
+              aria-pressed={weeklyTarget === null}
+              onClick={() => setWeeklyTarget(null)}
+            >
+              Fixed
+            </button>
+            {[1, 2, 3, 4, 5, 6, 7].map((target) => (
+              <button
+                type="button"
+                className={weeklyTarget === target ? "active" : ""}
+                aria-pressed={weeklyTarget === target}
+                key={target}
+                onClick={() => setWeeklyTarget(target)}
+              >
+                {target}
+              </button>
+            ))}
+          </div>
+          <small className="daily-target-hint">
+            {weeklyTarget ? `Goal: ${weeklyTarget} check${weeklyTarget === 1 ? "" : "s"} across the active days below.` : "Fixed uses the exact active-day schedule."}
+          </small>
+        </fieldset>
         <fieldset>
           <legend>Active days</legend>
           <div className="daily-weekdays">
