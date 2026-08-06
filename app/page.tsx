@@ -2292,10 +2292,6 @@ function QuickLinks({
 }) {
   return (
     <section className="quicklinks" aria-label="Quicklinks">
-      <div className="quicklinks-label">
-        <span>Quicklinks</span>
-        <em>04</em>
-      </div>
       <div className="quicklinks-grid">
         {[1, 2, 3, 4].map((slot) => {
           const link = links.find((entry) => entry.slot === slot);

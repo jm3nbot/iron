@@ -10,6 +10,8 @@ test("renders the Ink & Iron workspace shell", async () => {
     readFile(new URL("app/page.tsx", root), "utf8"),
   ]);
   assert.match(layout, /title: "Ink&Iron"/);
+  assert.match(layout, /userScalable: false/);
+  assert.match(layout, /maximumScale: 1/);
   assert.match(page, /aria-label="Agenda"/);
   assert.match(page, /Capture a thought…/i);
   assert.match(page, /Paste a link…/i);
@@ -54,7 +56,9 @@ test("keeps the site lightweight with authenticated Supabase persistence", async
   assert.match(featureMigration, /enable row level security/);
   assert.match(quickLinksRoute, /upsert/);
   assert.match(page, /Quicklinks/);
+  assert.doesNotMatch(page, />Quicklinks<\/span>/);
   assert.match(page, /Days per week/);
+  assert.match(css, /font-size: 16px !important/);
   assert.match(calendarRoute, /calendar\.events\.readonly/);
   assert.match(calendarRoute, /AES-GCM/);
   assert.match(fallback, /Ink &amp; Iron/);
