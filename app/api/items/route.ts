@@ -28,6 +28,13 @@ type WorkspaceRow = {
   updated_at: string;
 };
 
+type MemberRow = {
+  id: string;
+  item_id: string;
+  user_id: string;
+  invite_status: "pending" | "accepted" | "declined";
+};
+
 function isSection(value: unknown): value is Section {
   return value === "now" || value === "projects" || value === "library";
 }
@@ -53,7 +60,11 @@ function cleanLinks(value: unknown) {
   ];
 }
 
-function toPublicItem(row: WorkspaceRow) {
+function toPublicItem(
+  row: WorkspaceRow,
+  ownerUsername = "",
+  members: { id: string; userId: string; username: string }[] = [],
+) {
   return {
     id: row.id,
     content: row.content,
@@ -73,6 +84,9 @@ function toPublicItem(row: WorkspaceRow) {
     bold: row.bold,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    ownerId: row.user_id,
+    ownerUsername,
+    sharedWith: members,
   };
 }
 
@@ -123,8 +137,61 @@ export async function GET(request: Request) {
     return Response.json({ error: error.message }, { status: 500 });
   }
 
+  const rows = (data ?? []) as WorkspaceRow[];
+  const { data: memberData, error: memberError } = await auth.supabase
+    .from("workspace_item_members")
+    .select("id, item_id, user_id, invite_status");
+  if (memberError) {
+    return Response.json({ error: memberError.message }, { status: 500 });
+  }
+  const memberships = (memberData ?? []) as MemberRow[];
+  const acceptedItemIds = new Set(
+    memberships
+      .filter(
+        (member) =>
+          member.user_id === auth.user.id && member.invite_status === "accepted",
+      )
+      .map((member) => member.item_id),
+  );
+  const visibleRows = rows.filter(
+    (row) => row.user_id === auth.user.id || acceptedItemIds.has(row.id),
+  );
+  const acceptedMembers = memberships.filter(
+    (member) => member.invite_status === "accepted",
+  );
+  const profileIds = [
+    ...new Set([
+      ...visibleRows.map((row) => row.user_id),
+      ...acceptedMembers.map((member) => member.user_id),
+    ]),
+  ];
+  const { data: profiles, error: profileError } = profileIds.length
+    ? await auth.supabase.from("profiles").select("id, username").in("id", profileIds)
+    : { data: [], error: null };
+  if (profileError) {
+    return Response.json({ error: profileError.message }, { status: 500 });
+  }
+  const usernames = new Map(
+    ((profiles ?? []) as { id: string; username: string }[]).map((profile) => [
+      profile.id,
+      profile.username,
+    ]),
+  );
+
   return Response.json({
-    items: (data as WorkspaceRow[]).map(toPublicItem),
+    items: visibleRows.map((row) =>
+      toPublicItem(
+        row,
+        usernames.get(row.user_id) ?? "",
+        acceptedMembers
+          .filter((member) => member.item_id === row.id)
+          .map((member) => ({
+            id: member.id,
+            userId: member.user_id,
+            username: usernames.get(member.user_id) ?? "Unknown",
+          })),
+      ),
+    ),
     storageMode: "hosted",
   });
 }

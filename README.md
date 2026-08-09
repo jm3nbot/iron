@@ -103,6 +103,25 @@ or enforce explicit server-side membership or allowlist checks.
 Use SIWC for account pages, user-specific dashboards, saved records, and write
 actions tied to the current ChatGPT user. Leave public content anonymous.
 
+## Email reminders
+
+Email reminders run through Supabase Cron, Edge Functions, and Resend. After applying
+`supabase/migrations/20260809004857_reminders_and_shared_items.sql`:
+
+1. Deploy `send-reminders` without gateway JWT verification and deploy
+   `reminder-action` without gateway JWT verification. Both functions perform their
+   own authorization.
+2. Set the Edge Function secrets `RESEND_API_KEY`, `REMINDER_FROM_EMAIL`,
+   `REMINDER_CRON_SECRET`, `REMINDER_ACTION_SECRET`, and `SITE_URL`.
+3. Add `project_url`, `publishable_key`, and `reminder_cron_secret` to Supabase
+   Vault. The Vault value for `reminder_cron_secret` must match the Edge Function
+   secret.
+4. Verify the sender domain configured in `REMINDER_FROM_EMAIL` with Resend.
+
+The migration schedules one five-minute dispatcher. It remains inert until the
+three Vault values exist, so missing email configuration never blocks normal app
+use.
+
 ## Useful Commands
 
 - `npm run dev`: start local development
