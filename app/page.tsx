@@ -221,8 +221,21 @@ function fullDateLabel(value: string) {
   });
 }
 
+function shortDateLabel(value: string) {
+  return parseDateKey(value).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function dailyActiveStart(item: DailyItem) {
+  const created = item.createdAt.slice(0, 10);
+  if (!item.startDate) return created;
+  return item.startDate > created ? item.startDate : created;
+}
+
 function isDailyScheduled(item: DailyItem, key: string) {
-  if (item.archived || (item.startDate && key < item.startDate) || (item.endDate && key > item.endDate)) {
+  if (item.archived || key < dailyActiveStart(item) || (item.endDate && key > item.endDate)) {
     return false;
   }
   const weekday = parseDateKey(key).getDay();
@@ -270,6 +283,59 @@ function isDailyDueOn(item: DailyItem, key: string, completions: DailyCompletion
       completion.completionDate < key,
   ).length;
   return completedBefore < item.weeklyTarget;
+}
+
+function dailyPerformance(
+  item: DailyItem,
+  completions: DailyCompletion[],
+  requestedStart: string,
+  requestedEnd: string,
+) {
+  const start = dailyActiveStart(item) > requestedStart ? dailyActiveStart(item) : requestedStart;
+  const end = item.endDate && item.endDate < requestedEnd ? item.endDate : requestedEnd;
+  if (start > end) return { expected: 0, checked: 0 };
+
+  const startDate = parseDateKey(start);
+  const endDate = parseDateKey(end);
+  const activeDays: string[] = [];
+  for (const cursor = new Date(startDate); cursor <= endDate; cursor.setDate(cursor.getDate() + 1)) {
+    const key = dateKey(cursor);
+    if (isDailyScheduled(item, key)) activeDays.push(key);
+  }
+  const completedDays = new Set(
+    completions
+      .filter(
+        (completion) =>
+          completion.dailyId === item.id &&
+          completion.completionDate >= start &&
+          completion.completionDate <= end,
+      )
+      .map((completion) => completion.completionDate),
+  );
+
+  if (!item.weeklyTarget) {
+    return {
+      expected: activeDays.length,
+      checked: activeDays.filter((key) => completedDays.has(key)).length,
+    };
+  }
+
+  const weeks = new Map<string, string[]>();
+  for (const key of activeDays) {
+    const week = weekBounds(key).start;
+    weeks.set(week, [...(weeks.get(week) ?? []), key]);
+  }
+  let expected = 0;
+  let checked = 0;
+  for (const days of weeks.values()) {
+    const weeklyExpected = Math.min(item.weeklyTarget, days.length);
+    expected += weeklyExpected;
+    checked += Math.min(
+      weeklyExpected,
+      days.filter((key) => completedDays.has(key)).length,
+    );
+  }
+  return { expected, checked };
 }
 
 function quickLinkInitials(label: string) {
@@ -2733,10 +2799,15 @@ function DailyView({
   const finishedCount = scheduledToday.length - remaining.length;
 
   const trackerDays = useMemo(() => {
-    const end = parseDateKey(today);
-    return Array.from({ length: 182 }, (_, index) => {
-      const day = new Date(end);
-      day.setDate(end.getDate() - (181 - index));
+    const currentWeek = weekBounds(today);
+    const start = parseDateKey(currentWeek.start);
+    start.setDate(start.getDate() - 15 * 7);
+    const end = parseDateKey(currentWeek.end);
+    end.setDate(end.getDate() + 7);
+    const length = Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
+    return Array.from({ length }, (_, index) => {
+      const day = new Date(start);
+      day.setDate(start.getDate() + index);
       const key = dateKey(day);
       const eligible = items.filter((item) => isDailyDueOn(item, key, completions));
       const finished = eligible.filter((item) =>
@@ -2749,17 +2820,37 @@ function DailyView({
         eligible: eligible.length,
         finished,
         ratio: eligible.length ? finished / eligible.length : -1,
+        future: key > today,
       };
     });
   }, [completions, items, today]);
 
-  const trackedDays = trackerDays.filter((day) => day.eligible > 0);
-  const totalDue = trackedDays.reduce((sum, day) => sum + day.eligible, 0);
-  const totalFinished = trackedDays.reduce((sum, day) => sum + day.finished, 0);
+  const historyDays = trackerDays.filter((day) => !day.future);
+  const recentStartDate = parseDateKey(today);
+  recentStartDate.setDate(recentStartDate.getDate() - 29);
+  const recentStart = dateKey(recentStartDate);
+  const recentPerformance = items.reduce(
+    (total, item) => {
+      const performance = dailyPerformance(item, completions, recentStart, today);
+      return {
+        expected: total.expected + performance.expected,
+        checked: total.checked + performance.checked,
+      };
+    },
+    { expected: 0, checked: 0 },
+  );
+  const totalDue = recentPerformance.expected;
+  const totalFinished = recentPerformance.checked;
   const completionRate = totalDue ? Math.round((totalFinished / totalDue) * 100) : 0;
+  const nextSevenDate = parseDateKey(today);
+  nextSevenDate.setDate(nextSevenDate.getDate() + 7);
+  const nextSeven = dateKey(nextSevenDate);
+  const upcomingOpportunities = trackerDays
+    .filter((day) => day.key > today && day.key <= nextSeven)
+    .reduce((sum, day) => sum + day.eligible, 0);
   let streak = 0;
-  for (let index = trackerDays.length - 1; index >= 0; index -= 1) {
-    const day = trackerDays[index];
+  for (let index = historyDays.length - 1; index >= 0; index -= 1) {
+    const day = historyDays[index];
     if (!day.eligible) continue;
     if (day.ratio === 1) streak += 1;
     else if (day.key === today) continue;
@@ -2921,23 +3012,33 @@ function DailyView({
       ) : (
         <div className="daily-tracker">
           <div className="daily-tracker-metrics">
-            <div><span>Completion</span><strong>{completionRate}%</strong><em>last 26 weeks</em></div>
+            <div><span>Completion</span><strong>{completionRate}%</strong><em>last 30 days</em></div>
             <div><span>Current streak</span><strong>{streak}</strong><em>scheduled days</em></div>
-            <div><span>Checks logged</span><strong>{totalFinished}</strong><em>of {totalDue}</em></div>
+            <div><span>Checks logged</span><strong>{totalFinished}</strong><em>of {totalDue} expected</em></div>
+            <div><span>Coming up</span><strong>{upcomingOpportunities}</strong><em>next 7 days</em></div>
           </div>
           <section className="daily-heatmap-panel">
             <div className="daily-tracker-head">
-              <div><span>Consistency field</span><strong>26 weeks</strong></div>
-              <div className="daily-heatmap-key"><span>Less</span><i /><i className="level-1" /><i className="level-2" /><i className="level-3" /><i className="level-4" /><span>More</span></div>
+              <div>
+                <span>Consistency field</span>
+                <strong>{shortDateLabel(trackerDays[0].key)} – {shortDateLabel(trackerDays[trackerDays.length - 1].key)}</strong>
+                <small>15 weeks back · next week visible</small>
+              </div>
+              <div className="daily-heatmap-key"><span>Less</span><i /><i className="level-1" /><i className="level-2" /><i className="level-3" /><i className="level-4" /><span>More</span><i className="upcoming" /><span>Upcoming</span></div>
             </div>
             <div className="daily-heatmap" aria-label="Daily completion heatmap">
               {trackerDays.map((day) => {
-                const level = day.ratio < 0 ? "off" : day.ratio === 0 ? "level-0" : day.ratio < .4 ? "level-1" : day.ratio < .7 ? "level-2" : day.ratio < 1 ? "level-3" : "level-4";
+                const level = day.future
+                  ? day.eligible ? "upcoming" : "future-off"
+                  : day.ratio < 0 ? "off" : day.ratio === 0 ? "level-0" : day.ratio < .4 ? "level-1" : day.ratio < .7 ? "level-2" : day.ratio < 1 ? "level-3" : "level-4";
+                const title = day.future
+                  ? `${fullDateLabel(day.key)} — ${day.eligible ? `${day.eligible} available` : "nothing scheduled"}`
+                  : `${fullDateLabel(day.key)} — ${day.eligible ? `${day.finished}/${day.eligible} completed` : "not active"}`;
                 return (
                   <span
-                    className={level}
+                    className={`${level} ${day.key === today ? "today" : ""}`}
                     key={day.key}
-                    title={`${fullDateLabel(day.key)} — ${day.finished}/${day.eligible} completed`}
+                    title={title}
                   />
                 );
               })}
@@ -2946,9 +3047,10 @@ function DailyView({
           <section className="daily-performance">
             <div className="daily-list-head"><span>By daily</span><em>completion history</em></div>
             {items.map((item) => {
-              const eligible = trackerDays.filter((day) => isDailyDueOn(item, day.key, completions));
-              const checked = eligible.filter((day) => completions.some((completion) => completion.dailyId === item.id && completion.completionDate === day.key)).length;
-              const rate = eligible.length ? Math.round((checked / eligible.length) * 100) : 0;
+              const visibleStart = trackerDays[0].key;
+              const performance = dailyPerformance(item, completions, visibleStart, today);
+              const rate = performance.expected ? Math.round((performance.checked / performance.expected) * 100) : 0;
+              const activeSince = dailyActiveStart(item) > visibleStart ? dailyActiveStart(item) : visibleStart;
               return (
                 <button
                   type="button"
@@ -2959,7 +3061,10 @@ function DailyView({
                     setEditorOpen(true);
                   }}
                 >
-                  <span><strong>{item.content}</strong><small>{checked} of {eligible.length} scheduled days</small></span>
+                  <span>
+                    <strong>{item.content}</strong>
+                    <small>{performance.checked} of {performance.expected} {item.weeklyTarget ? "target checks" : "scheduled days"} · since {shortDateLabel(activeSince)}</small>
+                  </span>
                   <i><span style={{ width: `${rate}%` }} /></i>
                   <em>{rate}%</em>
                 </button>
@@ -3918,8 +4023,8 @@ function CollaborationCenter({
             <label>
               <span>Share</span>
               <select value={targetKind} onChange={(event) => setTargetKind(event.target.value as Collaboration["kind"])}>
-                <option value="item">A line</option>
-                <option value="project">A project</option>
+                <option value="item">A Line</option>
+                <option value="project">A Project</option>
               </select>
             </label>
             {targetKind === "project" ? (

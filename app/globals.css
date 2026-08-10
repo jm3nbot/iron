@@ -3292,7 +3292,7 @@ select:focus-visible {
 
 .daily-tracker-metrics {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 10px;
 }
 
@@ -3339,6 +3339,12 @@ select:focus-visible {
   gap: 3px;
 }
 
+.daily-tracker-head > div:first-child small {
+  color: var(--paper-faint);
+  font-size: 7px;
+  letter-spacing: .06em;
+}
+
 .daily-tracker-head strong {
   font: 500 15px/1 var(--serif);
 }
@@ -3379,6 +3385,7 @@ select:focus-visible {
 }
 
 .daily-heatmap .off { background: rgba(36,34,30,.018); opacity: .38; }
+.daily-heatmap .future-off { background: rgba(36,34,30,.018); opacity: .18; }
 .daily-heatmap .level-0 { background: rgba(169,79,66,.09); }
 .daily-heatmap .level-1,
 .daily-heatmap-key .level-1 { background: rgba(166,95,56,.2); }
@@ -3388,6 +3395,21 @@ select:focus-visible {
 .daily-heatmap-key .level-3 { background: rgba(123,118,75,.58); }
 .daily-heatmap .level-4,
 .daily-heatmap-key .level-4 { background: var(--success); }
+.daily-heatmap .upcoming,
+.daily-heatmap-key .upcoming {
+  border-color: rgba(166,95,56,.42);
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(166,95,56,.18) 0,
+    rgba(166,95,56,.18) 2px,
+    rgba(251,250,246,.45) 2px,
+    rgba(251,250,246,.45) 4px
+  );
+}
+.daily-heatmap .today {
+  border-color: var(--copper);
+  box-shadow: 0 0 0 2px rgba(166,95,56,.14);
+}
 
 .daily-performance {
   overflow: hidden;
