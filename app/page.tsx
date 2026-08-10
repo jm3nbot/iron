@@ -101,21 +101,6 @@ type GoogleCalendarEvent = {
   allDay: boolean;
 };
 
-type EmailReminder = {
-  id: string;
-  itemId: string;
-  recipientEmail: string;
-  startDaysBefore: number;
-  repeatEveryHours: number;
-  sendTime: string;
-  timezone: string;
-  nextSendAt: string;
-  lastSentAt: string | null;
-  status: "active" | "paused" | "stopped";
-  createdAt: string;
-  updatedAt: string;
-};
-
 type SharedPreview = {
   id: string;
   content: string;
@@ -129,7 +114,9 @@ type SharedPreview = {
 
 type Collaboration = {
   id: string;
-  itemId: string;
+  kind: "item" | "project";
+  itemId: string | null;
+  projectName: string | null;
   ownerId: string;
   userId: string;
   invitedBy: string;
@@ -374,8 +361,6 @@ export default function Home() {
   const [dailyLoading, setDailyLoading] = useState(true);
   const [quickLinks, setQuickLinks] = useState<QuickLink[]>([]);
   const [quickLinkSlot, setQuickLinkSlot] = useState<number | null>(null);
-  const [emailReminders, setEmailReminders] = useState<EmailReminder[]>([]);
-  const [reminderTarget, setReminderTarget] = useState<Item | null>(null);
   const [collaborations, setCollaborations] = useState<CollaborationState>({
     incoming: [],
     outgoing: [],
@@ -383,6 +368,7 @@ export default function Home() {
   });
   const [collaborationOpen, setCollaborationOpen] = useState(false);
   const [shareTarget, setShareTarget] = useState<Item | null>(null);
+  const [shareProjectTarget, setShareProjectTarget] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<View>("now");
   const [query, setQuery] = useState("");
   const [capture, setCapture] = useState("");
@@ -457,13 +443,6 @@ export default function Home() {
     setQuickLinks(data.links);
   }, [authenticatedFetch]);
 
-  const loadEmailReminders = useCallback(async () => {
-    const response = await authenticatedFetch("/api/reminders", { cache: "no-store" });
-    if (!response.ok) throw new Error("Reminders load failed");
-    const data = (await response.json()) as { reminders: EmailReminder[] };
-    setEmailReminders(data.reminders);
-  }, [authenticatedFetch]);
-
   const loadCollaborations = useCallback(async () => {
     const response = await authenticatedFetch("/api/sharing", { cache: "no-store" });
     if (!response.ok) throw new Error("Collaborations load failed");
@@ -493,7 +472,6 @@ export default function Home() {
         setDailyItems([]);
         setDailyCompletions([]);
         setQuickLinks([]);
-        setEmailReminders([]);
         setCollaborations({ incoming: [], outgoing: [], shared: [] });
         setUsername("");
         setAccountOpen(false);
@@ -702,7 +680,6 @@ export default function Home() {
       if (!active) return;
       void Promise.all([
         loadCollaborations(),
-        loadEmailReminders(),
         authenticatedFetch("/api/items", { cache: "no-store" })
           .then((response) => (response.ok ? response.json() : null))
           .then((data: { items: Item[] } | null) => {
@@ -745,10 +722,20 @@ export default function Home() {
         {
           event: "*",
           schema: "public",
-          table: "task_email_reminders",
+          table: "workspace_project_members",
           filter: `user_id=eq.${session.user.id}`,
         },
-        () => { if (active) void loadEmailReminders(); },
+        reload,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "workspace_project_members",
+          filter: `invited_by=eq.${session.user.id}`,
+        },
+        reload,
       )
       .subscribe();
     return () => {
@@ -758,7 +745,7 @@ export default function Home() {
       window.removeEventListener("focus", refreshOnFocus);
       void supabase.removeChannel(channel);
     };
-  }, [authenticatedFetch, cacheItems, loadCollaborations, loadEmailReminders, session]);
+  }, [authenticatedFetch, cacheItems, loadCollaborations, session]);
 
   useEffect(() => {
     if (!session) return;
@@ -1195,53 +1182,15 @@ export default function Home() {
     [authenticatedFetch],
   );
 
-  const saveEmailReminder = useCallback(
-    async (
-      item: Item,
-      schedule: {
-        startDaysBefore: number;
-        repeatEveryHours: number;
-        sendTime: string;
-        nextSendAt: string;
-        timezone: string;
-      },
-    ) => {
-      const response = await authenticatedFetch("/api/reminders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ itemId: item.id, ...schedule }),
-      });
-      const result = (await response.json()) as { reminder?: EmailReminder; error?: string };
-      if (!response.ok || !result.reminder) {
-        throw new Error(result.error ?? "Reminder could not be saved.");
-      }
-      setEmailReminders((current) => [
-        ...current.filter((reminder) => reminder.itemId !== item.id),
-        result.reminder!,
-      ]);
-    },
-    [authenticatedFetch],
-  );
-
-  const deleteEmailReminder = useCallback(
-    async (reminder: EmailReminder) => {
-      const response = await authenticatedFetch("/api/reminders", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: reminder.id }),
-      });
-      if (!response.ok) throw new Error("Reminder could not be removed.");
-      setEmailReminders((current) => current.filter((entry) => entry.id !== reminder.id));
-    },
-    [authenticatedFetch],
-  );
-
   const sendCollaboration = useCallback(
-    async (itemId: string, recipientUsername: string) => {
+    async (
+      target: { kind: "item"; itemId: string } | { kind: "project"; projectName: string },
+      recipientUsername: string,
+    ) => {
       const response = await authenticatedFetch("/api/sharing", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ itemId, username: recipientUsername }),
+        body: JSON.stringify({ ...target, username: recipientUsername }),
       });
       const result = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(result.error ?? "Invitation could not be sent.");
@@ -1251,11 +1200,11 @@ export default function Home() {
   );
 
   const respondToCollaboration = useCallback(
-    async (id: string, status: "accepted" | "declined") => {
+    async (id: string, kind: Collaboration["kind"], status: "accepted" | "declined") => {
       const response = await authenticatedFetch("/api/sharing", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, status }),
+        body: JSON.stringify({ id, kind, status }),
       });
       const result = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(result.error ?? "Invitation could not be updated.");
@@ -1270,11 +1219,11 @@ export default function Home() {
   );
 
   const removeCollaboration = useCallback(
-    async (id: string) => {
+    async (id: string, kind: Collaboration["kind"]) => {
       const response = await authenticatedFetch("/api/sharing", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id }),
+        body: JSON.stringify({ id, kind }),
       });
       if (!response.ok) throw new Error("Collaboration could not be removed.");
       await loadCollaborations();
@@ -1452,24 +1401,40 @@ export default function Home() {
       window.alert(`“${nextName}” already exists.`);
       return;
     }
-    for (const item of items) {
-      if (item.section === section && item.groupName === name) {
-        updateItem(item.id, { groupName: nextName });
+    const applyRename = () => {
+      for (const item of items) {
+        if (item.section === section && item.groupName === name) {
+          updateItem(item.id, { groupName: nextName });
+        }
       }
+      setCollapsed((current) => {
+        if (!current.has(name)) return current;
+        const next = new Set(current);
+        next.delete(name);
+        next.add(nextName);
+        return next;
+      });
+      setGroupOrder((current) => ({
+        ...current,
+        [section]: groupNamesBySection[section].map((entry) =>
+          entry === name ? nextName : entry,
+        ),
+      }));
+    };
+    if (section !== "projects") {
+      applyRename();
+      return;
     }
-    setCollapsed((current) => {
-      if (!current.has(name)) return current;
-      const next = new Set(current);
-      next.delete(name);
-      next.add(nextName);
-      return next;
-    });
-    setGroupOrder((current) => ({
-      ...current,
-      [section]: groupNamesBySection[section].map((entry) =>
-        entry === name ? nextName : entry,
-      ),
-    }));
+    void authenticatedFetch("/api/sharing", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "rename-project", oldProjectName: name, projectName: nextName }),
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error("Project rename failed");
+        applyRename();
+      })
+      .catch(() => window.alert("The project could not be renamed. Please try again."));
   };
 
   const deleteGroup = (section: "projects" | "library", name: string) => {
@@ -1482,25 +1447,41 @@ export default function Home() {
     ) {
       return;
     }
-    for (const item of items) {
-      if (item.section === section && item.groupName === name) {
-        updateItem(item.id, { groupName: "Unsorted" });
+    const applyDelete = () => {
+      for (const item of items) {
+        if (item.section === section && item.groupName === name) {
+          updateItem(item.id, { groupName: "Unsorted" });
+        }
       }
+      setCollapsed((current) => {
+        const next = new Set(current);
+        next.delete(name);
+        return next;
+      });
+      setGroupOrder((current) => ({
+        ...current,
+        [section]: [
+          ...groupNamesBySection[section].filter(
+            (entry) => entry !== name && entry !== "Unsorted",
+          ),
+          "Unsorted",
+        ],
+      }));
+    };
+    if (section !== "projects") {
+      applyDelete();
+      return;
     }
-    setCollapsed((current) => {
-      const next = new Set(current);
-      next.delete(name);
-      return next;
-    });
-    setGroupOrder((current) => ({
-      ...current,
-      [section]: [
-        ...groupNamesBySection[section].filter(
-          (entry) => entry !== name && entry !== "Unsorted",
-        ),
-        "Unsorted",
-      ],
-    }));
+    void authenticatedFetch("/api/sharing", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "revoke-project", projectName: name }),
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error("Project delete failed");
+        applyDelete();
+      })
+      .catch(() => window.alert("The project could not be deleted. Please try again."));
   };
 
   const reorderGroup = (
@@ -1804,38 +1785,29 @@ export default function Home() {
         />
       )}
 
-      {reminderTarget && (
-        <ReminderEditor
-          item={reminderTarget}
-          reminder={emailReminders.find((entry) => entry.itemId === reminderTarget.id) ?? null}
-          onClose={() => setReminderTarget(null)}
-          onSave={(schedule) => saveEmailReminder(reminderTarget, schedule)}
-          onDelete={async (reminder) => {
-            await deleteEmailReminder(reminder);
-            setReminderTarget(null);
-          }}
-        />
-      )}
-
-      {(collaborationOpen || shareTarget) && (
+      {(collaborationOpen || shareTarget || shareProjectTarget) && (
         <CollaborationCenter
           currentUserId={session.user.id}
           items={items}
           initialItem={shareTarget}
+          initialProject={shareProjectTarget}
           state={collaborations}
           authenticatedFetch={authenticatedFetch}
           onClose={() => {
             setCollaborationOpen(false);
             setShareTarget(null);
+            setShareProjectTarget(null);
           }}
           onSend={sendCollaboration}
           onRespond={respondToCollaboration}
           onRemove={removeCollaboration}
           onOpenItem={(itemId) => {
+            if (!itemId) return;
             const item = items.find((entry) => entry.id === itemId);
             if (item) openOriginalItem(item);
             setCollaborationOpen(false);
             setShareTarget(null);
+            setShareProjectTarget(null);
           }}
         />
       )}
@@ -2051,8 +2023,6 @@ export default function Home() {
                   updateItem={updateItem}
                   deleteItem={deleteItem}
                   addSubItem={() => createSubItem(item)}
-                  reminder={emailReminders.find((entry) => entry.itemId === item.id) ?? null}
-                  onEditReminder={() => setReminderTarget(item)}
                   onShare={() => {
                     void loadCollaborations().catch(() => undefined);
                     setShareTarget(item);
@@ -2150,6 +2120,9 @@ export default function Home() {
                         }, 190);
                       }}
                       onDoubleClick={(event) => {
+                        if (!groupItems.some((item) => item.ownerId === session.user.id)) {
+                          return;
+                        }
                         if (
                           !(event.target instanceof HTMLElement) ||
                           !event.target.closest(".group-name")
@@ -2168,6 +2141,7 @@ export default function Home() {
                       }}
                       onKeyDown={(event) => {
                         if (event.key !== "F2") return;
+                        if (!groupItems.some((item) => item.ownerId === session.user.id)) return;
                         event.preventDefault();
                         renameGroup(
                           activeView as "projects" | "library",
@@ -2189,7 +2163,21 @@ export default function Home() {
                       />
                     </button>
                     <div className="group-tools">
-                      {name !== "Unsorted" && (
+                      {activeView === "projects" && name !== "Unsorted" && groupItems.some((item) => item.ownerId === session.user.id) && (
+                        <button
+                          type="button"
+                          className="share-tool"
+                          aria-label={`Share ${name}`}
+                          title="Share project"
+                          onClick={() => {
+                            void loadCollaborations().catch(() => undefined);
+                            setShareProjectTarget(name);
+                          }}
+                        >
+                          <span aria-hidden="true">📧</span>
+                        </button>
+                      )}
+                      {name !== "Unsorted" && groupItems.some((item) => item.ownerId === session.user.id) && (
                         <button
                           type="button"
                           className="danger"
@@ -2217,8 +2205,6 @@ export default function Home() {
                           updateItem={updateItem}
                           deleteItem={deleteItem}
                           addSubItem={() => createSubItem(item)}
-                          reminder={emailReminders.find((entry) => entry.itemId === item.id) ?? null}
-                          onEditReminder={() => setReminderTarget(item)}
                           onShare={() => {
                             void loadCollaborations().catch(() => undefined);
                             setShareTarget(item);
@@ -3817,117 +3803,11 @@ function AgendaInspector({
   );
 }
 
-function ReminderEditor({
-  item,
-  reminder,
-  onClose,
-  onSave,
-  onDelete,
-}: {
-  item: Item;
-  reminder: EmailReminder | null;
-  onClose: () => void;
-  onSave: (
-    schedule: {
-      startDaysBefore: number;
-      repeatEveryHours: number;
-      sendTime: string;
-      nextSendAt: string;
-      timezone: string;
-    },
-  ) => Promise<void>;
-  onDelete: (reminder: EmailReminder) => Promise<void>;
-}) {
-  const [startDays, setStartDays] = useState(reminder?.startDaysBefore ?? 3);
-  const [repeatDays, setRepeatDays] = useState(
-    Math.max(1, Math.round((reminder?.repeatEveryHours ?? 24) / 24)),
-  );
-  const [sendTime, setSendTime] = useState(reminder?.sendTime ?? "09:00");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  const save = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!item.dueDate) return;
-    setBusy(true);
-    setError("");
-    try {
-      const start = parseDateKey(item.dueDate);
-      start.setDate(start.getDate() - startDays);
-      const [hours, minutes] = sendTime.split(":").map(Number);
-      start.setHours(hours, minutes, 0, 0);
-      await onSave({
-        startDaysBefore: startDays,
-        repeatEveryHours: repeatDays * 24,
-        sendTime,
-        nextSendAt: start.toISOString(),
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-      });
-      onClose();
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Reminder could not be saved.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="overlay" role="presentation" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) onClose();
-    }}>
-      <section className="compact-dialog reminder-dialog" role="dialog" aria-modal="true" aria-labelledby="reminder-title">
-        <header>
-          <div>
-            <span>Email reminder</span>
-            <h2 id="reminder-title">{item.content}</h2>
-          </div>
-          <button type="button" aria-label="Close" onClick={onClose}>×</button>
-        </header>
-        {!item.dueDate ? (
-          <div className="dialog-empty">
-            <strong>Set a due date first.</strong>
-            <p>Email reminders count backward from the task deadline.</p>
-            <button type="button" onClick={onClose}>Return to the line</button>
-          </div>
-        ) : (
-          <form onSubmit={save}>
-            <p className="reminder-deadline">Due {fullDateLabel(item.dueDate)}</p>
-            <div className="reminder-grid">
-              <label>
-                <span>Start before</span>
-                <div><input type="number" min="0" max="365" value={startDays} onChange={(event) => setStartDays(Math.max(0, Math.min(365, Number(event.target.value))))} /><em>days</em></div>
-              </label>
-              <label>
-                <span>Repeat every</span>
-                <div><input type="number" min="1" max="30" value={repeatDays} onChange={(event) => setRepeatDays(Math.max(1, Math.min(30, Number(event.target.value))))} /><em>days</em></div>
-              </label>
-              <label>
-                <span>Delivery time</span>
-                <input type="time" value={sendTime} onChange={(event) => setSendTime(event.target.value)} />
-              </label>
-            </div>
-            <p className="reminder-summary">
-              Starts {startDays === 0 ? "on the due date" : `${startDays} day${startDays === 1 ? "" : "s"} before`} and repeats {repeatDays === 1 ? "daily" : `every ${repeatDays} days`} until completion or the deadline.
-            </p>
-            {reminder?.lastSentAt && <small>Last sent {new Date(reminder.lastSentAt).toLocaleString()}</small>}
-            {error && <p className="dialog-error" role="alert">{error}</p>}
-            <footer>
-              {reminder && <button type="button" className="danger" onClick={() => void onDelete(reminder)} disabled={busy}>Remove</button>}
-              <span />
-              <button type="button" onClick={onClose}>Cancel</button>
-              <button type="submit" className="primary" disabled={busy}>{busy ? "Saving…" : reminder ? "Update reminder" : "Set reminder"}</button>
-            </footer>
-          </form>
-        )}
-      </section>
-    </div>
-  );
-}
-
 function CollaborationCenter({
   currentUserId,
   items,
   initialItem,
+  initialProject,
   state,
   authenticatedFetch,
   onClose,
@@ -3939,19 +3819,23 @@ function CollaborationCenter({
   currentUserId: string;
   items: Item[];
   initialItem: Item | null;
+  initialProject: string | null;
   state: CollaborationState;
   authenticatedFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   onClose: () => void;
-  onSend: (itemId: string, username: string) => Promise<void>;
-  onRespond: (id: string, status: "accepted" | "declined") => Promise<void>;
-  onRemove: (id: string) => Promise<void>;
-  onOpenItem: (itemId: string) => void;
+  onSend: (target: { kind: "item"; itemId: string } | { kind: "project"; projectName: string }, username: string) => Promise<void>;
+  onRespond: (id: string, kind: Collaboration["kind"], status: "accepted" | "declined") => Promise<void>;
+  onRemove: (id: string, kind: Collaboration["kind"]) => Promise<void>;
+  onOpenItem: (itemId: string | null) => void;
 }) {
   const ownItems = items.filter((item) => (!item.ownerId || item.ownerId === currentUserId) && !item.archived);
+  const ownProjects = [...new Set(ownItems.filter((item) => item.section === "projects" && item.groupName && item.groupName !== "Unsorted").map((item) => item.groupName))];
   const [mode, setMode] = useState<"send" | "inbox" | "shared">(
-    initialItem?.ownerId === currentUserId ? "send" : state.incoming.length ? "inbox" : "shared",
+    initialItem?.ownerId === currentUserId || initialProject ? "send" : state.incoming.length ? "inbox" : "shared",
   );
+  const [targetKind, setTargetKind] = useState<Collaboration["kind"]>(initialProject ? "project" : "item");
   const [itemId, setItemId] = useState(initialItem?.ownerId === currentUserId ? initialItem.id : ownItems[0]?.id ?? "");
+  const [projectName, setProjectName] = useState(initialProject ?? ownProjects[0] ?? "");
   const [query, setQuery] = useState("");
   const [users, setUsers] = useState<Array<{ id: string; username: string }>>([]);
   const [busyId, setBusyId] = useState("");
@@ -3980,12 +3864,15 @@ function CollaborationCenter({
   const visibleUsers = query.trim().length >= 2 ? users : [];
 
   const send = async (selectedUsername: string) => {
-    if (!itemId) return;
+    const target = targetKind === "project"
+      ? projectName ? { kind: "project" as const, projectName } : null
+      : itemId ? { kind: "item" as const, itemId } : null;
+    if (!target) return;
     setBusyId(selectedUsername);
     setError("");
     setMessage("");
     try {
-      await onSend(itemId, selectedUsername);
+      await onSend(target, selectedUsername);
       setMessage(`Sent to @${selectedUsername}.`);
       setQuery("");
       setUsers([]);
@@ -4000,7 +3887,7 @@ function CollaborationCenter({
     setBusyId(collaboration.id);
     setError("");
     try {
-      await onRespond(collaboration.id, status);
+      await onRespond(collaboration.id, collaboration.kind, status);
     } catch (responseError) {
       setError(responseError instanceof Error ? responseError.message : "Invitation could not be updated.");
     } finally {
@@ -4016,7 +3903,7 @@ function CollaborationCenter({
         <header>
           <div>
             <span>People</span>
-            <h2 id="collaboration-title">Shared lines</h2>
+            <h2 id="collaboration-title">Shared work</h2>
           </div>
           <button type="button" aria-label="Close" onClick={onClose}>×</button>
         </header>
@@ -4029,21 +3916,37 @@ function CollaborationCenter({
         {mode === "send" && (
           <div className="collaboration-send">
             <label>
-              <span>Line</span>
-              <select value={itemId} onChange={(event) => setItemId(event.target.value)}>
-                {ownItems.map((item) => <option value={item.id} key={item.id}>{item.content}</option>)}
+              <span>Share</span>
+              <select value={targetKind} onChange={(event) => setTargetKind(event.target.value as Collaboration["kind"])}>
+                <option value="item">A line</option>
+                <option value="project">A project</option>
               </select>
             </label>
+            {targetKind === "project" ? (
+              <label>
+                <span>Project</span>
+                <select value={projectName} onChange={(event) => setProjectName(event.target.value)}>
+                  {ownProjects.map((project) => <option value={project} key={project}>{project}</option>)}
+                </select>
+              </label>
+            ) : (
+              <label>
+                <span>Line</span>
+                <select value={itemId} onChange={(event) => setItemId(event.target.value)}>
+                  {ownItems.map((item) => <option value={item.id} key={item.id}>{item.content}</option>)}
+                </select>
+              </label>
+            )}
             <label>
               <span>Find username</span>
               <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Start typing a username…" />
             </label>
             <div className="people-results">
               {visibleUsers.map((user) => (
-                <button type="button" key={user.id} disabled={!itemId || Boolean(busyId)} onClick={() => void send(user.username)}>
+                <button type="button" key={user.id} disabled={!(targetKind === "project" ? projectName : itemId) || Boolean(busyId)} onClick={() => void send(user.username)}>
                   <span>{user.username.slice(0, 1).toUpperCase()}</span>
                   <strong>@{user.username}</strong>
-                  <em>{busyId === user.username ? "Sending…" : "Send line →"}</em>
+                  <em>{busyId === user.username ? "Sending…" : `Send ${targetKind} →`}</em>
                 </button>
               ))}
               {query.trim().length >= 2 && visibleUsers.length === 0 && <p>No matching username.</p>}
@@ -4052,7 +3955,7 @@ function CollaborationCenter({
               <div className="outgoing-list">
                 <span>Awaiting response</span>
                 {state.outgoing.map((entry) => (
-                  <div key={entry.id}><strong>{entry.item?.content ?? "Deleted line"}</strong><em>@{entry.recipientUsername}</em></div>
+                  <div key={entry.id}><strong>{entry.kind === "project" ? entry.projectName : entry.item?.content ?? "Deleted line"}</strong><em>@{entry.recipientUsername}</em></div>
                 ))}
               </div>
             )}
@@ -4061,10 +3964,11 @@ function CollaborationCenter({
 
         {mode === "inbox" && (
           <div className="collaboration-list">
-            {state.incoming.length === 0 ? <p className="dialog-list-empty">No pending lines.</p> : state.incoming.map((entry) => (
+            {state.incoming.length === 0 ? <p className="dialog-list-empty">No pending invitations.</p> : state.incoming.map((entry) => (
               <article key={entry.id}>
                 <div><span>{entry.senderUsername.slice(0, 1).toUpperCase()}</span><small>@{entry.senderUsername} sent</small></div>
-                <h3>{entry.item?.content ?? "Unavailable line"}</h3>
+                <h3>{entry.kind === "project" ? entry.projectName : entry.item?.content ?? "Unavailable line"}</h3>
+                {entry.kind === "project" && <p>This project and its lines will appear in Projects.</p>}
                 {entry.item?.note && <p>{entry.item.note}</p>}
                 <footer>
                   <button type="button" onClick={() => void respond(entry, "declined")} disabled={busyId === entry.id}>Decline</button>
@@ -4077,12 +3981,16 @@ function CollaborationCenter({
 
         {mode === "shared" && (
           <div className="collaboration-list shared-list">
-            {state.shared.length === 0 ? <p className="dialog-list-empty">No shared lines yet.</p> : state.shared.map((entry) => (
+            {state.shared.length === 0 ? <p className="dialog-list-empty">No shared work yet.</p> : state.shared.map((entry) => (
               <article key={entry.id}>
                 <div><span>{(entry.invitedBy === currentUserId ? entry.recipientUsername : entry.senderUsername).slice(0, 1).toUpperCase()}</span><small>With @{entry.invitedBy === currentUserId ? entry.recipientUsername : entry.senderUsername}</small></div>
-                <button type="button" className="shared-line-open" onClick={() => onOpenItem(entry.itemId)}>{entry.item?.content ?? "Unavailable line"}<em>Open →</em></button>
+                {entry.kind === "project" ? (
+                  <h3>{entry.projectName}</h3>
+                ) : (
+                  <button type="button" className="shared-line-open" onClick={() => onOpenItem(entry.itemId)}>{entry.item?.content ?? "Unavailable line"}<em>Open →</em></button>
+                )}
                 <footer>
-                  <button type="button" className="danger" onClick={() => void onRemove(entry.id)}>{entry.invitedBy === currentUserId ? "Stop sharing" : "Leave"}</button>
+                  <button type="button" className="danger" onClick={() => void onRemove(entry.id, entry.kind)}>{entry.invitedBy === currentUserId ? "Stop sharing" : "Leave"}</button>
                 </footer>
               </article>
             ))}
@@ -4118,8 +4026,6 @@ function ItemLine({
   updateItem,
   deleteItem,
   addSubItem,
-  reminder,
-  onEditReminder,
   onShare,
   canDelete,
   groupNames,
@@ -4132,8 +4038,6 @@ function ItemLine({
   updateItem: (id: string, patch: Patch) => void;
   deleteItem: (item: Item) => void;
   addSubItem: () => void;
-  reminder: EmailReminder | null;
-  onEditReminder: () => void;
   onShare: () => void;
   canDelete: boolean;
   groupNames: string[];
@@ -4319,16 +4223,6 @@ function ItemLine({
               ✎
             </button>
           )}
-          {reminder && (
-            <button
-              className={`reminder-indicator ${reminder.status}`}
-              title={`Email reminder ${reminder.status}. Next ${new Date(reminder.nextSendAt).toLocaleString()}`}
-              aria-label={`Edit email reminder for ${item.content}`}
-              onClick={onEditReminder}
-            >
-              <span aria-hidden="true">🎯</span>
-            </button>
-          )}
           {((item.sharedWith ?? []).length > 0 || !canDelete) && item.ownerId && (
             <button
               type="button"
@@ -4375,14 +4269,6 @@ function ItemLine({
         <button className={noteOpen ? "selected" : ""} aria-label="Add note" title="Add note" onClick={() => setNoteOpen((open) => !open)}>N</button>
         <button className="link-tool" aria-label="Add another link" title="Add link" onClick={addLink}>
           <span aria-hidden="true">📎</span>
-        </button>
-        <button
-          className={`email-tool ${reminder?.status === "active" ? "selected" : ""}`}
-          aria-label="Configure email reminder"
-          title={item.dueDate ? "Email reminder" : "Set a due date before adding an email reminder"}
-          onClick={onEditReminder}
-        >
-          <span aria-hidden="true">🎯</span>
         </button>
         {canDelete && (
           <button className="share-tool" aria-label="Share with another user" title="Share line" onClick={onShare}>

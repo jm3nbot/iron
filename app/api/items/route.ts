@@ -35,6 +35,14 @@ type MemberRow = {
   invite_status: "pending" | "accepted" | "declined";
 };
 
+type ProjectMemberRow = {
+  id: string;
+  project_name: string;
+  owner_id: string;
+  user_id: string;
+  invite_status: "pending" | "accepted" | "declined";
+};
+
 function isSection(value: unknown): value is Section {
   return value === "now" || value === "projects" || value === "library";
 }
@@ -138,13 +146,15 @@ export async function GET(request: Request) {
   }
 
   const rows = (data ?? []) as WorkspaceRow[];
-  const { data: memberData, error: memberError } = await auth.supabase
-    .from("workspace_item_members")
-    .select("id, item_id, user_id, invite_status");
-  if (memberError) {
-    return Response.json({ error: memberError.message }, { status: 500 });
+  const [memberResult, projectMemberResult] = await Promise.all([
+    auth.supabase.from("workspace_item_members").select("id, item_id, user_id, invite_status"),
+    auth.supabase.from("workspace_project_members").select("id, project_name, owner_id, user_id, invite_status"),
+  ]);
+  if (memberResult.error || projectMemberResult.error) {
+    return Response.json({ error: memberResult.error?.message ?? projectMemberResult.error?.message }, { status: 500 });
   }
-  const memberships = (memberData ?? []) as MemberRow[];
+  const memberships = (memberResult.data ?? []) as MemberRow[];
+  const projectMemberships = (projectMemberResult.data ?? []) as ProjectMemberRow[];
   const acceptedItemIds = new Set(
     memberships
       .filter(
@@ -153,16 +163,28 @@ export async function GET(request: Request) {
       )
       .map((member) => member.item_id),
   );
+  const acceptedProjectKeys = new Set(
+    projectMemberships
+      .filter((member) => member.user_id === auth.user.id && member.invite_status === "accepted")
+      .map((member) => `${member.owner_id}:${member.project_name}`),
+  );
   const visibleRows = rows.filter(
-    (row) => row.user_id === auth.user.id || acceptedItemIds.has(row.id),
+    (row) =>
+      row.user_id === auth.user.id ||
+      acceptedItemIds.has(row.id) ||
+      (row.section === "projects" && acceptedProjectKeys.has(`${row.user_id}:${row.group_name}`)),
   );
   const acceptedMembers = memberships.filter(
+    (member) => member.invite_status === "accepted",
+  );
+  const acceptedProjectMembers = projectMemberships.filter(
     (member) => member.invite_status === "accepted",
   );
   const profileIds = [
     ...new Set([
       ...visibleRows.map((row) => row.user_id),
       ...acceptedMembers.map((member) => member.user_id),
+      ...acceptedProjectMembers.map((member) => member.user_id),
     ]),
   ];
   const { data: profiles, error: profileError } = profileIds.length
@@ -189,7 +211,16 @@ export async function GET(request: Request) {
             id: member.id,
             userId: member.user_id,
             username: usernames.get(member.user_id) ?? "Unknown",
-          })),
+          }))
+          .concat(
+            acceptedProjectMembers
+              .filter((member) => row.section === "projects" && member.owner_id === row.user_id && member.project_name === row.group_name)
+              .map((member) => ({
+                id: member.id,
+                userId: member.user_id,
+                username: usernames.get(member.user_id) ?? "Unknown",
+              })),
+          ),
       ),
     ),
     storageMode: "hosted",

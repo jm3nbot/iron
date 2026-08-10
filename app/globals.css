@@ -1170,7 +1170,6 @@ select:focus-visible {
   transform: translateY(-1px) scale(1.08);
 }
 
-.reminder-indicator,
 .shared-indicator {
   display: inline-flex;
   align-items: center;
@@ -1187,20 +1186,6 @@ select:focus-visible {
   transition: color 120ms ease, border-color 120ms ease, transform 120ms ease, background 120ms ease;
 }
 
-.reminder-indicator.active {
-  border-color: rgba(166,95,56,.34);
-  background: rgba(166,95,56,.07);
-  color: var(--copper-light);
-}
-
-.reminder-indicator > span {
-  display: block;
-  font-size: 12px;
-  line-height: 1;
-  filter: saturate(.78);
-}
-
-.reminder-indicator:hover,
 .shared-indicator:hover {
   border-color: var(--copper);
   color: var(--copper-light);
@@ -1350,7 +1335,6 @@ select:focus-visible {
   transform: rotate(0deg) scale(1.08);
 }
 
-.line-tools .email-tool span,
 .line-tools .share-tool span {
   display: inline-block;
   font-size: 13px;
@@ -1360,8 +1344,6 @@ select:focus-visible {
   transition: filter 120ms ease, transform 120ms ease;
 }
 
-.line-tools .email-tool:hover span,
-.line-tools .email-tool.selected span,
 .line-tools .share-tool:hover span {
   filter: saturate(1);
   transform: translateY(-.5px) scale(1.08);
@@ -3664,39 +3646,15 @@ select:focus-visible {
   transform: rotate(4deg);
 }
 
-.reminder-dialog form,
 .dialog-empty {
   padding: 22px 24px 24px;
 }
 
-.reminder-deadline {
-  margin: 0 0 17px;
-  color: var(--copper-light);
-  font: 500 12px/1.4 var(--serif);
-}
-
-.reminder-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.reminder-grid label,
 .collaboration-send label {
   display: grid;
   gap: 7px;
 }
 
-.reminder-grid label > div {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  border: 1px solid var(--steel);
-  border-radius: 3px;
-  background: rgba(251,250,246,.72);
-}
-
-.reminder-grid input,
 .collaboration-send input,
 .collaboration-send select {
   width: 100%;
@@ -3710,37 +3668,10 @@ select:focus-visible {
   font-size: 10px;
 }
 
-.reminder-grid label > div input {
-  border: 0;
-  background: transparent;
-}
-
-.reminder-grid label > div em {
-  padding-right: 9px;
-  color: var(--paper-faint);
-  font-size: 8px;
-  font-style: normal;
-}
-
-.reminder-grid input:focus,
 .collaboration-send input:focus,
 .collaboration-send select:focus {
   border-color: var(--copper);
   box-shadow: 0 0 0 2px rgba(166,95,56,.08);
-}
-
-.reminder-summary {
-  margin: 16px 0 8px;
-  padding: 10px 12px;
-  border-left: 2px solid rgba(166,95,56,.35);
-  background: rgba(166,95,56,.045);
-  color: var(--paper-muted);
-  font: italic 10px/1.55 var(--serif);
-}
-
-.reminder-dialog form > small {
-  color: var(--paper-faint);
-  font-size: 8px;
 }
 
 .compact-dialog form > footer,
@@ -4847,12 +4778,7 @@ select:focus-visible {
     max-height: calc(100dvh - 20px);
   }
 
-  .reminder-grid {
-    grid-template-columns: 1fr;
-  }
-
   .compact-dialog > header,
-  .reminder-dialog form,
   .dialog-empty,
   .collaboration-send,
   .collaboration-list {
