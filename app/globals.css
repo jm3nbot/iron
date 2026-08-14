@@ -3356,9 +3356,10 @@ select:focus-visible {
 }
 
 .daily-heatmap-key i,
-.daily-heatmap > span {
+.daily-heatmap > button {
   width: 10px;
   height: 10px;
+  padding: 0;
   border: 1px solid rgba(138,132,121,.2);
   border-radius: 2px;
   background: rgba(36,34,30,.04);
@@ -3375,11 +3376,14 @@ select:focus-visible {
   padding: 18px;
 }
 
-.daily-heatmap > span {
-  transition: transform 120ms ease, border-color 120ms ease;
+.daily-heatmap > button {
+  appearance: none;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
 
-.daily-heatmap > span:hover {
+.daily-heatmap > button:hover,
+.daily-heatmap > button:focus-visible {
   border-color: var(--copper);
   transform: scale(1.28);
 }
@@ -3409,6 +3413,131 @@ select:focus-visible {
 .daily-heatmap .today {
   border-color: var(--copper);
   box-shadow: 0 0 0 2px rgba(166,95,56,.14);
+}
+
+.daily-heatmap .selected {
+  border-color: var(--paper);
+  box-shadow: 0 0 0 2px var(--ink), 0 0 0 3px var(--paper);
+  transform: scale(1.18);
+}
+
+.daily-day-inspector {
+  border-top: 1px solid var(--iron);
+  background: rgba(251,250,246,.35);
+}
+
+.daily-day-inspector-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--iron);
+}
+
+.daily-day-inspector-head > div {
+  display: grid;
+  gap: 3px;
+}
+
+.daily-day-inspector-head span,
+.daily-day-inspector-head em,
+.daily-day-inspector-list em {
+  color: var(--paper-faint);
+  font-size: 7px;
+  font-style: normal;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+
+.daily-day-inspector-head strong {
+  font: 500 15px/1.1 var(--serif);
+}
+
+.daily-day-inspector-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--iron);
+}
+
+.daily-day-inspector-list > button {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 52px;
+  padding: 9px 13px;
+  border: 0;
+  background: rgba(251,250,246,.92);
+  color: var(--paper);
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+.daily-day-inspector-list > button:hover {
+  z-index: 1;
+  background: var(--ink-raised);
+  transform: translateY(-1px);
+}
+
+.daily-day-inspector-list i {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 1px solid var(--steel);
+  border-radius: 50%;
+  color: var(--paper-faint);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.daily-day-inspector-list .completed i {
+  border-color: var(--success);
+  background: var(--success);
+  color: #fff;
+}
+
+.daily-day-inspector-list .missed i {
+  border-color: rgba(169,79,66,.35);
+  color: var(--danger);
+}
+
+.daily-day-inspector-list .upcoming i {
+  border-color: rgba(166,95,56,.4);
+  color: var(--copper);
+}
+
+.daily-day-inspector-list > button > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.daily-day-inspector-list strong {
+  overflow: hidden;
+  font-size: 9px;
+  font-weight: 590;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.daily-day-inspector-list small {
+  color: var(--paper-faint);
+  font-size: 7px;
+}
+
+.daily-day-inspector-list .completed em { color: var(--success); }
+.daily-day-inspector-list .missed em { color: var(--danger); }
+.daily-day-inspector-list .upcoming em { color: var(--copper-light); }
+
+.daily-day-inspector-empty {
+  margin: 0;
+  padding: 20px 14px;
+  color: var(--paper-faint);
+  font: 500 13px/1.3 var(--serif);
 }
 
 .daily-performance {
@@ -4877,6 +5006,14 @@ select:focus-visible {
 
   .daily-heatmap {
     justify-content: start;
+  }
+
+  .daily-day-inspector-list {
+    grid-template-columns: 1fr;
+  }
+
+  .daily-day-inspector-list > button {
+    grid-template-columns: 24px minmax(0, 1fr) auto;
   }
 
   .daily-performance-row {

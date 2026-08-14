@@ -2782,6 +2782,7 @@ function DailyView({
   const [departingId, setDepartingId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const today = dateKey(new Date());
+  const [selectedTrackerDate, setSelectedTrackerDate] = useState(today);
   const completedToday = useMemo(
     () =>
       new Set(
@@ -2826,6 +2827,25 @@ function DailyView({
   }, [completions, items, today]);
 
   const historyDays = trackerDays.filter((day) => !day.future);
+  const selectedCompletedIds = new Set(
+    completions
+      .filter((completion) => completion.completionDate === selectedTrackerDate)
+      .map((completion) => completion.dailyId),
+  );
+  const selectedDayItems = items
+    .filter(
+      (item) =>
+        selectedCompletedIds.has(item.id) ||
+        isDailyDueOn(item, selectedTrackerDate, completions),
+    )
+    .sort((left, right) => {
+      const completionDifference =
+        Number(selectedCompletedIds.has(right.id)) - Number(selectedCompletedIds.has(left.id));
+      return completionDifference || left.position - right.position;
+    });
+  const selectedCompletedCount = selectedDayItems.filter((item) =>
+    selectedCompletedIds.has(item.id),
+  ).length;
   const recentStartDate = parseDateKey(today);
   recentStartDate.setDate(recentStartDate.getDate() - 29);
   const recentStart = dateKey(recentStartDate);
@@ -3035,13 +3055,60 @@ function DailyView({
                   ? `${fullDateLabel(day.key)} — ${day.eligible ? `${day.eligible} available` : "nothing scheduled"}`
                   : `${fullDateLabel(day.key)} — ${day.eligible ? `${day.finished}/${day.eligible} completed` : "not active"}`;
                 return (
-                  <span
-                    className={`${level} ${day.key === today ? "today" : ""}`}
+                  <button
+                    type="button"
+                    className={`${level} ${day.key === today ? "today" : ""} ${day.key === selectedTrackerDate ? "selected" : ""}`}
                     key={day.key}
                     title={title}
+                    aria-label={title}
+                    aria-pressed={day.key === selectedTrackerDate}
+                    onClick={() => setSelectedTrackerDate(day.key)}
                   />
                 );
               })}
+            </div>
+            <div className="daily-day-inspector" aria-live="polite">
+              <div className="daily-day-inspector-head">
+                <div>
+                  <span>Day file</span>
+                  <strong>{fullDateLabel(selectedTrackerDate)}</strong>
+                </div>
+                <em>
+                  {selectedTrackerDate > today
+                    ? `${selectedDayItems.length} available`
+                    : `${selectedCompletedCount} of ${selectedDayItems.length} completed`}
+                </em>
+              </div>
+              {selectedDayItems.length ? (
+                <div className="daily-day-inspector-list">
+                  {selectedDayItems.map((item) => {
+                    const completed = selectedCompletedIds.has(item.id);
+                    const future = selectedTrackerDate > today;
+                    return (
+                      <button
+                        type="button"
+                        className={completed ? "completed" : future ? "upcoming" : "missed"}
+                        key={`day-${selectedTrackerDate}-${item.id}`}
+                        onClick={() => {
+                          setEditorItem(item);
+                          setEditorOpen(true);
+                        }}
+                      >
+                        <i aria-hidden="true">{completed ? "✓" : future ? "→" : "·"}</i>
+                        <span>
+                          <strong>{item.content}</strong>
+                          <small>{dailyScheduleLabel(item)}</small>
+                        </span>
+                        <em>{completed ? "Completed" : future ? "Available" : "Missed"}</em>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="daily-day-inspector-empty">
+                  {selectedTrackerDate > today ? "Nothing is available on this day." : "Nothing was scheduled on this day."}
+                </p>
+              )}
             </div>
           </section>
           <section className="daily-performance">
@@ -4023,8 +4090,8 @@ function CollaborationCenter({
             <label>
               <span>Share</span>
               <select value={targetKind} onChange={(event) => setTargetKind(event.target.value as Collaboration["kind"])}>
-                <option value="item">A Line</option>
-                <option value="project">A Project</option>
+                <option value="item">Line</option>
+                <option value="project">Project</option>
               </select>
             </label>
             {targetKind === "project" ? (
