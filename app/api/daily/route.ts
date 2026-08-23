@@ -24,6 +24,13 @@ type CompletionRow = {
   completed_at: string;
 };
 
+type ExclusionRow = {
+  exclusion_date: string;
+  reason: string;
+  created_at: string;
+  updated_at: string;
+};
+
 function toDailyItem(row: DailyRow) {
   return {
     id: row.id,
@@ -46,6 +53,15 @@ function toCompletion(row: CompletionRow) {
     dailyId: row.daily_id,
     completionDate: row.completion_date,
     completedAt: row.completed_at,
+  };
+}
+
+function toExclusion(row: ExclusionRow) {
+  return {
+    date: row.exclusion_date,
+    reason: row.reason ?? "",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -101,7 +117,7 @@ export async function GET(request: Request) {
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - 370);
   const cutoffKey = cutoff.toISOString().slice(0, 10);
-  const [itemsResult, completionsResult] = await Promise.all([
+  const [itemsResult, completionsResult, exclusionsResult] = await Promise.all([
     auth.supabase
       .from("daily_items")
       .select("*")
@@ -113,11 +129,20 @@ export async function GET(request: Request) {
       .select("daily_id, completion_date, completed_at")
       .gte("completion_date", cutoffKey)
       .order("completion_date"),
+    auth.supabase
+      .from("daily_exclusions")
+      .select("exclusion_date, reason, created_at, updated_at")
+      .order("exclusion_date"),
   ]);
 
-  if (itemsResult.error || completionsResult.error) {
+  if (itemsResult.error || completionsResult.error || exclusionsResult.error) {
     return Response.json(
-      { error: itemsResult.error?.message ?? completionsResult.error?.message },
+      {
+        error:
+          itemsResult.error?.message ??
+          completionsResult.error?.message ??
+          exclusionsResult.error?.message,
+      },
       { status: 500 },
     );
   }
@@ -125,6 +150,7 @@ export async function GET(request: Request) {
   return Response.json({
     items: (itemsResult.data as DailyRow[]).map(toDailyItem),
     completions: (completionsResult.data as CompletionRow[]).map(toCompletion),
+    exclusions: (exclusionsResult.data as ExclusionRow[]).map(toExclusion),
   });
 }
 
@@ -132,7 +158,12 @@ export async function POST(request: Request) {
   const auth = await requireUser(request);
   if (auth.response) return auth.response;
   const payload = (await request.json()) as Record<string, unknown>;
-  const action = payload.action === "complete" ? "complete" : "create";
+  const action =
+    payload.action === "complete"
+      ? "complete"
+      : payload.action === "exclude"
+        ? "exclude"
+        : "create";
 
   if (action === "complete") {
     const dailyId = typeof payload.dailyId === "string" ? payload.dailyId : "";
@@ -157,6 +188,29 @@ export async function POST(request: Request) {
     }
     if (error) return Response.json({ error: error.message }, { status: 500 });
     return Response.json({ completion: toCompletion(data as CompletionRow) }, { status: 201 });
+  }
+
+  if (action === "exclude") {
+    const exclusionDate = cleanDate(payload.date);
+    if (!exclusionDate) {
+      return Response.json({ error: "Choose a valid date to exclude." }, { status: 400 });
+    }
+    const reason = typeof payload.reason === "string" ? payload.reason.trim().slice(0, 240) : "";
+    const { data, error } = await auth.supabase
+      .from("daily_exclusions")
+      .upsert(
+        {
+          user_id: auth.user.id,
+          exclusion_date: exclusionDate,
+          reason,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id,exclusion_date" },
+      )
+      .select("exclusion_date, reason, created_at, updated_at")
+      .single();
+    if (error) return Response.json({ error: error.message }, { status: 500 });
+    return Response.json({ exclusion: toExclusion(data as ExclusionRow) }, { status: 201 });
   }
 
   const content = typeof payload.content === "string" ? payload.content.trim() : "";
@@ -238,6 +292,17 @@ export async function DELETE(request: Request) {
   const auth = await requireUser(request);
   if (auth.response) return auth.response;
   const payload = (await request.json()) as Record<string, unknown>;
+  if (payload.action === "unexclude") {
+    const exclusionDate = cleanDate(payload.date);
+    if (!exclusionDate) return Response.json({ error: "Missing exclusion date." }, { status: 400 });
+    const { error } = await auth.supabase
+      .from("daily_exclusions")
+      .delete()
+      .eq("user_id", auth.user.id)
+      .eq("exclusion_date", exclusionDate);
+    if (error) return Response.json({ error: error.message }, { status: 500 });
+    return Response.json({ ok: true });
+  }
   const id = typeof payload.id === "string" ? payload.id : "";
   if (!id) return Response.json({ error: "Missing daily item." }, { status: 400 });
   const { error } = await auth.supabase.from("daily_items").delete().eq("id", id);

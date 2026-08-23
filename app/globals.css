@@ -3390,6 +3390,11 @@ select:focus-visible {
 
 .daily-heatmap .off { background: rgba(36,34,30,.018); opacity: .38; }
 .daily-heatmap .future-off { background: rgba(36,34,30,.018); opacity: .18; }
+.daily-heatmap .excluded,
+.daily-heatmap-key .focus-excluded {
+  border-color: rgba(109,104,95,.35);
+  background: repeating-linear-gradient(135deg, rgba(109,104,95,.16) 0 2px, transparent 2px 4px);
+}
 .daily-heatmap .level-0 { background: rgba(169,79,66,.09); }
 .daily-heatmap .level-1,
 .daily-heatmap-key .level-1 { background: rgba(166,95,56,.2); }
@@ -3413,6 +3418,16 @@ select:focus-visible {
 .daily-heatmap .today {
   border-color: var(--copper);
   box-shadow: 0 0 0 2px rgba(166,95,56,.14);
+}
+
+.daily-heatmap .focus-complete,
+.daily-heatmap-key .focus-complete { background: var(--success); }
+.daily-heatmap .focus-open,
+.daily-heatmap-key .focus-open { background: rgba(36,34,30,.035); }
+.daily-heatmap .focus-upcoming,
+.daily-heatmap-key .focus-upcoming {
+  border-color: rgba(166,95,56,.42);
+  background: repeating-linear-gradient(135deg, rgba(166,95,56,.18) 0 2px, rgba(251,250,246,.45) 2px 4px);
 }
 
 .daily-heatmap .selected {
@@ -3452,6 +3467,95 @@ select:focus-visible {
 
 .daily-day-inspector-head strong {
   font: 500 15px/1.1 var(--serif);
+}
+
+.daily-day-inspector-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.daily-day-inspector-actions button,
+.daily-focus-clear {
+  padding: 5px 8px;
+  border: 1px solid var(--steel);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--paper-muted);
+  cursor: pointer;
+  font-size: 7px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  transition: border-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.daily-day-inspector-actions button:hover,
+.daily-focus-clear:hover {
+  border-color: var(--copper);
+  color: var(--copper-light);
+  transform: translateY(-1px);
+}
+
+.daily-day-inspector-reason {
+  margin: 0;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--iron);
+  color: var(--paper-faint);
+  font-size: 8px;
+}
+
+.daily-exclusion-form {
+  display: grid;
+  gap: 8px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--iron);
+  background: rgba(166,95,56,.045);
+}
+
+.daily-exclusion-form label {
+  color: var(--paper-muted);
+  font-size: 8px;
+  font-weight: 620;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.daily-exclusion-form textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 8px 9px;
+  border: 1px solid var(--steel);
+  border-radius: 2px;
+  background: var(--ink-raised);
+  color: var(--paper);
+  font-size: 11px;
+  outline: none;
+}
+
+.daily-exclusion-form textarea:focus {
+  border-color: var(--copper);
+}
+
+.daily-exclusion-form > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.daily-exclusion-form > div button {
+  padding: 6px 9px;
+  border: 1px solid var(--steel);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--paper-muted);
+  cursor: pointer;
+  font-size: 8px;
+}
+
+.daily-exclusion-form > div .primary {
+  border-color: var(--copper);
+  background: var(--copper);
+  color: var(--ink);
 }
 
 .daily-day-inspector-list {
@@ -3563,6 +3667,11 @@ select:focus-visible {
 .daily-performance-row:hover {
   background: rgba(255,255,255,.35);
   transform: translateX(2px);
+}
+
+.daily-performance-row.selected {
+  background: rgba(166,95,56,.09);
+  box-shadow: inset 2px 0 var(--copper);
 }
 
 .daily-performance-row > span {

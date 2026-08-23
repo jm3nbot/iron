@@ -81,6 +81,13 @@ type DailyCompletion = {
   completedAt: string;
 };
 
+type DailyExclusion = {
+  date: string;
+  reason: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type DailyDraft = Pick<DailyItem, "content" | "note" | "links" | "weekdayMask" | "weeklyTarget" | "startDate" | "endDate">;
 
 type QuickLink = {
@@ -290,6 +297,7 @@ function dailyPerformance(
   completions: DailyCompletion[],
   requestedStart: string,
   requestedEnd: string,
+  excludedDates: Set<string> = new Set(),
 ) {
   const start = dailyActiveStart(item) > requestedStart ? dailyActiveStart(item) : requestedStart;
   const end = item.endDate && item.endDate < requestedEnd ? item.endDate : requestedEnd;
@@ -300,7 +308,7 @@ function dailyPerformance(
   const activeDays: string[] = [];
   for (const cursor = new Date(startDate); cursor <= endDate; cursor.setDate(cursor.getDate() + 1)) {
     const key = dateKey(cursor);
-    if (isDailyScheduled(item, key)) activeDays.push(key);
+    if (!excludedDates.has(key) && isDailyScheduled(item, key)) activeDays.push(key);
   }
   const completedDays = new Set(
     completions
@@ -424,6 +432,7 @@ export default function Home() {
   const [items, setItems] = useState<Item[]>([]);
   const [dailyItems, setDailyItems] = useState<DailyItem[]>([]);
   const [dailyCompletions, setDailyCompletions] = useState<DailyCompletion[]>([]);
+  const [dailyExclusions, setDailyExclusions] = useState<DailyExclusion[]>([]);
   const [dailyLoading, setDailyLoading] = useState(true);
   const [quickLinks, setQuickLinks] = useState<QuickLink[]>([]);
   const [quickLinkSlot, setQuickLinkSlot] = useState<number | null>(null);
@@ -497,9 +506,11 @@ export default function Home() {
     const data = (await response.json()) as {
       items: DailyItem[];
       completions: DailyCompletion[];
+      exclusions: DailyExclusion[];
     };
     setDailyItems(data.items);
     setDailyCompletions(data.completions);
+    setDailyExclusions(data.exclusions ?? []);
   }, [authenticatedFetch]);
 
   const loadQuickLinks = useCallback(async () => {
@@ -537,6 +548,7 @@ export default function Home() {
         setItems([]);
         setDailyItems([]);
         setDailyCompletions([]);
+        setDailyExclusions([]);
         setQuickLinks([]);
         setCollaborations({ incoming: [], outgoing: [], shared: [] });
         setUsername("");
@@ -699,6 +711,16 @@ export default function Home() {
           event: "*",
           schema: "public",
           table: "daily_completions",
+          filter: `user_id=eq.${session.user.id}`,
+        },
+        () => { void loadDaily(); },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "daily_exclusions",
           filter: `user_id=eq.${session.user.id}`,
         },
         () => { void loadDaily(); },
@@ -1196,6 +1218,40 @@ export default function Home() {
         );
         throw error;
       }
+    },
+    [authenticatedFetch],
+  );
+
+  const saveDailyExclusion = useCallback(
+    async (date: string, reason: string) => {
+      const response = await authenticatedFetch("/api/daily", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "exclude", date, reason }),
+      });
+      const result = (await response.json()) as { exclusion?: DailyExclusion; error?: string };
+      if (!response.ok || !result.exclusion) {
+        throw new Error(result.error ?? "Date could not be excluded.");
+      }
+      setDailyExclusions((current) => [
+        ...current.filter((entry) => entry.date !== date),
+        result.exclusion!,
+      ].sort((left, right) => left.date.localeCompare(right.date)));
+      return result.exclusion;
+    },
+    [authenticatedFetch],
+  );
+
+  const restoreDailyDate = useCallback(
+    async (date: string) => {
+      const response = await authenticatedFetch("/api/daily", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "unexclude", date }),
+      });
+      const result = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Date could not be restored.");
+      setDailyExclusions((current) => current.filter((entry) => entry.date !== date));
     },
     [authenticatedFetch],
   );
@@ -2003,10 +2059,13 @@ export default function Home() {
             <DailyView
               items={dailyItems}
               completions={dailyCompletions}
+              exclusions={dailyExclusions}
               loading={dailyLoading}
               saveItem={saveDailyItem}
               completeItem={completeDailyItem}
               deleteItem={deleteDailyItem}
+              saveExclusion={saveDailyExclusion}
+              restoreDate={restoreDailyDate}
             />
           ) : activeItems.length === 0 && dailySearchResults.length === 0 ? (
             <div className="empty-state">
@@ -2764,25 +2823,37 @@ function QuickLinkEditor({
 function DailyView({
   items,
   completions,
+  exclusions,
   loading,
   saveItem,
   completeItem,
   deleteItem,
+  saveExclusion,
+  restoreDate,
 }: {
   items: DailyItem[];
   completions: DailyCompletion[];
+  exclusions: DailyExclusion[];
   loading: boolean;
   saveItem: (id: string | null, draft: DailyDraft) => Promise<DailyItem>;
   completeItem: (id: string, completionDate: string) => Promise<void>;
   deleteItem: (item: DailyItem) => Promise<void>;
+  saveExclusion: (date: string, reason: string) => Promise<DailyExclusion>;
+  restoreDate: (date: string) => Promise<void>;
 }) {
   const [mode, setMode] = useState<DailyMode>("today");
   const [editorItem, setEditorItem] = useState<DailyItem | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [departingId, setDepartingId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [selectedDailyId, setSelectedDailyId] = useState<string | null>(null);
+  const [exclusionEditorOpen, setExclusionEditorOpen] = useState(false);
+  const [exclusionReason, setExclusionReason] = useState("");
+  const [exclusionBusy, setExclusionBusy] = useState(false);
   const today = dateKey(new Date());
   const [selectedTrackerDate, setSelectedTrackerDate] = useState(today);
+  const exclusionKeys = useMemo(() => new Set(exclusions.map((entry) => entry.date)), [exclusions]);
+  const selectedExclusion = exclusions.find((entry) => entry.date === selectedTrackerDate) ?? null;
   const completedToday = useMemo(
     () =>
       new Set(
@@ -2793,8 +2864,8 @@ function DailyView({
     [completions, today],
   );
   const scheduledToday = useMemo(
-    () => items.filter((item) => isDailyDueOn(item, today, completions)),
-    [completions, items, today],
+    () => exclusionKeys.has(today) ? [] : items.filter((item) => isDailyDueOn(item, today, completions)),
+    [completions, exclusionKeys, items, today],
   );
   const remaining = scheduledToday.filter((item) => !completedToday.has(item.id));
   const finishedCount = scheduledToday.length - remaining.length;
@@ -2810,7 +2881,8 @@ function DailyView({
       const day = new Date(start);
       day.setDate(start.getDate() + index);
       const key = dateKey(day);
-      const eligible = items.filter((item) => isDailyDueOn(item, key, completions));
+      const excluded = exclusionKeys.has(key);
+      const eligible = excluded ? [] : items.filter((item) => isDailyDueOn(item, key, completions));
       const finished = eligible.filter((item) =>
         completions.some(
           (completion) => completion.dailyId === item.id && completion.completionDate === key,
@@ -2822,9 +2894,10 @@ function DailyView({
         finished,
         ratio: eligible.length ? finished / eligible.length : -1,
         future: key > today,
+        excluded,
       };
     });
-  }, [completions, items, today]);
+  }, [completions, exclusionKeys, items, today]);
 
   const historyDays = trackerDays.filter((day) => !day.future);
   const selectedCompletedIds = new Set(
@@ -2832,12 +2905,13 @@ function DailyView({
       .filter((completion) => completion.completionDate === selectedTrackerDate)
       .map((completion) => completion.dailyId),
   );
-  const selectedDayItems = items
-    .filter(
-      (item) =>
-        selectedCompletedIds.has(item.id) ||
-        isDailyDueOn(item, selectedTrackerDate, completions),
-    )
+  const selectedDayItems = selectedExclusion
+    ? []
+    : items.filter(
+        (item) =>
+          selectedCompletedIds.has(item.id) ||
+          isDailyDueOn(item, selectedTrackerDate, completions),
+      )
     .sort((left, right) => {
       const completionDifference =
         Number(selectedCompletedIds.has(right.id)) - Number(selectedCompletedIds.has(left.id));
@@ -2851,7 +2925,7 @@ function DailyView({
   const recentStart = dateKey(recentStartDate);
   const recentPerformance = items.reduce(
     (total, item) => {
-      const performance = dailyPerformance(item, completions, recentStart, today);
+      const performance = dailyPerformance(item, completions, recentStart, today, exclusionKeys);
       return {
         expected: total.expected + performance.expected,
         checked: total.checked + performance.checked,
@@ -2868,6 +2942,7 @@ function DailyView({
   const upcomingOpportunities = trackerDays
     .filter((day) => day.key > today && day.key <= nextSeven)
     .reduce((sum, day) => sum + day.eligible, 0);
+  const focusedDaily = items.find((item) => item.id === selectedDailyId) ?? null;
   let streak = 0;
   for (let index = historyDays.length - 1; index >= 0; index -= 1) {
     const day = historyDays[index];
@@ -2885,6 +2960,33 @@ function DailyView({
       });
       setDepartingId(null);
     }, 190);
+  };
+
+  const submitExclusion = async (event: FormEvent) => {
+    event.preventDefault();
+    setExclusionBusy(true);
+    setError("");
+    try {
+      await saveExclusion(selectedTrackerDate, exclusionReason);
+      setExclusionEditorOpen(false);
+      setExclusionReason("");
+    } catch (exclusionError) {
+      setError(exclusionError instanceof Error ? exclusionError.message : "Date could not be excluded.");
+    } finally {
+      setExclusionBusy(false);
+    }
+  };
+
+  const restoreSelectedDate = async () => {
+    setExclusionBusy(true);
+    setError("");
+    try {
+      await restoreDate(selectedTrackerDate);
+    } catch (restoreError) {
+      setError(restoreError instanceof Error ? restoreError.message : "Date could not be restored.");
+    } finally {
+      setExclusionBusy(false);
+    }
   };
 
   return (
@@ -3042,18 +3144,44 @@ function DailyView({
               <div>
                 <span>Consistency field</span>
                 <strong>{shortDateLabel(trackerDays[0].key)} – {shortDateLabel(trackerDays[trackerDays.length - 1].key)}</strong>
-                <small>15 weeks back · next week visible</small>
+                <small>{focusedDaily ? `Focused: ${focusedDaily.content} · click its row below to clear` : "15 weeks back · next week visible"}</small>
               </div>
-              <div className="daily-heatmap-key"><span>Less</span><i /><i className="level-1" /><i className="level-2" /><i className="level-3" /><i className="level-4" /><span>More</span><i className="upcoming" /><span>Upcoming</span></div>
+              {focusedDaily ? (
+                <div className="daily-heatmap-key"><i className="focus-complete" /><span>Done</span><i className="focus-open" /><span>Open</span><i className="focus-upcoming" /><span>Upcoming</span><i className="focus-excluded" /><span>Excluded</span></div>
+              ) : (
+                <div className="daily-heatmap-key"><span>Less</span><i /><i className="level-1" /><i className="level-2" /><i className="level-3" /><i className="level-4" /><span>More</span><i className="upcoming" /><span>Upcoming</span></div>
+              )}
             </div>
             <div className="daily-heatmap" aria-label="Daily completion heatmap">
               {trackerDays.map((day) => {
-                const level = day.future
-                  ? day.eligible ? "upcoming" : "future-off"
-                  : day.ratio < 0 ? "off" : day.ratio === 0 ? "level-0" : day.ratio < .4 ? "level-1" : day.ratio < .7 ? "level-2" : day.ratio < 1 ? "level-3" : "level-4";
-                const title = day.future
-                  ? `${fullDateLabel(day.key)} — ${day.eligible ? `${day.eligible} available` : "nothing scheduled"}`
-                  : `${fullDateLabel(day.key)} — ${day.eligible ? `${day.finished}/${day.eligible} completed` : "not active"}`;
+                const focusCompleted = Boolean(
+                  focusedDaily && completions.some(
+                    (completion) => completion.dailyId === focusedDaily.id && completion.completionDate === day.key,
+                  ),
+                );
+                const focusScheduled = Boolean(
+                  focusedDaily && !day.excluded && isDailyDueOn(focusedDaily, day.key, completions),
+                );
+                const level = focusedDaily
+                  ? day.excluded
+                    ? "focus-excluded"
+                    : focusCompleted
+                      ? "focus-complete"
+                      : focusScheduled
+                        ? day.future ? "focus-upcoming" : "focus-open"
+                        : day.future ? "future-off" : "off"
+                  : day.excluded
+                    ? "excluded"
+                    : day.future
+                      ? day.eligible ? "upcoming" : "future-off"
+                      : day.ratio < 0 ? "off" : day.ratio === 0 ? "level-0" : day.ratio < .4 ? "level-1" : day.ratio < .7 ? "level-2" : day.ratio < 1 ? "level-3" : "level-4";
+                const title = day.excluded
+                  ? `${fullDateLabel(day.key)} — excluded${exclusions.find((entry) => entry.date === day.key)?.reason ? `: ${exclusions.find((entry) => entry.date === day.key)?.reason}` : ""}`
+                  : focusedDaily
+                    ? `${fullDateLabel(day.key)} — ${focusCompleted ? "completed" : focusScheduled ? day.future ? "upcoming" : "not completed" : "not scheduled"}`
+                    : day.future
+                      ? `${fullDateLabel(day.key)} — ${day.eligible ? `${day.eligible} available` : "nothing scheduled"}`
+                      : `${fullDateLabel(day.key)} — ${day.eligible ? `${day.finished}/${day.eligible} completed` : "not active"}`;
                 return (
                   <button
                     type="button"
@@ -3073,12 +3201,34 @@ function DailyView({
                   <span>Day file</span>
                   <strong>{fullDateLabel(selectedTrackerDate)}</strong>
                 </div>
-                <em>
-                  {selectedTrackerDate > today
-                    ? `${selectedDayItems.length} available`
-                    : `${selectedCompletedCount} of ${selectedDayItems.length} completed`}
-                </em>
+                <div className="daily-day-inspector-actions">
+                  <em>
+                    {selectedExclusion
+                      ? "excluded"
+                      : selectedTrackerDate > today
+                        ? `${selectedDayItems.length} available`
+                        : `${selectedCompletedCount} of ${selectedDayItems.length} completed`}
+                  </em>
+                  {selectedExclusion ? (
+                    <button type="button" onClick={() => void restoreSelectedDate()} disabled={exclusionBusy}>Restore date</button>
+                  ) : (
+                    <button type="button" onClick={() => { setExclusionReason(""); setExclusionEditorOpen(true); }} disabled={exclusionBusy}>Exclude date</button>
+                  )}
+                </div>
               </div>
+              {selectedExclusion && (
+                <p className="daily-day-inspector-reason">Excluded from tracker calculations{selectedExclusion.reason ? ` · ${selectedExclusion.reason}` : ""}</p>
+              )}
+              {!selectedExclusion && exclusionEditorOpen && (
+                <form className="daily-exclusion-form" onSubmit={(event) => void submitExclusion(event)}>
+                  <label htmlFor="daily-exclusion-reason">Why exclude this date?</label>
+                  <textarea id="daily-exclusion-reason" value={exclusionReason} onChange={(event) => setExclusionReason(event.target.value)} maxLength={240} rows={2} autoFocus placeholder="Travel, illness, no access to my setup…" />
+                  <div>
+                    <button type="button" onClick={() => setExclusionEditorOpen(false)} disabled={exclusionBusy}>Cancel</button>
+                    <button type="submit" className="primary" disabled={exclusionBusy}>{exclusionBusy ? "Saving…" : "Exclude date"}</button>
+                  </div>
+                </form>
+              )}
               {selectedDayItems.length ? (
                 <div className="daily-day-inspector-list">
                   {selectedDayItems.map((item) => {
@@ -3106,24 +3256,34 @@ function DailyView({
                 </div>
               ) : (
                 <p className="daily-day-inspector-empty">
-                  {selectedTrackerDate > today ? "Nothing is available on this day." : "Nothing was scheduled on this day."}
+                  {selectedExclusion
+                    ? "This date is intentionally omitted from your data."
+                    : selectedTrackerDate > today ? "Nothing is available on this day." : "Nothing was scheduled on this day."}
                 </p>
               )}
             </div>
           </section>
           <section className="daily-performance">
-            <div className="daily-list-head"><span>By daily</span><em>completion history</em></div>
+            <div className="daily-list-head">
+              <span>By daily</span>
+              <em>{focusedDaily ? `Heatmap focused on ${focusedDaily.content}` : "click a daily to focus its heatmap"}</em>
+              {focusedDaily && <button type="button" className="daily-focus-clear" onClick={() => setSelectedDailyId(null)}>All dailies ×</button>}
+            </div>
             {items.map((item) => {
               const visibleStart = trackerDays[0].key;
-              const performance = dailyPerformance(item, completions, visibleStart, today);
+              const performance = dailyPerformance(item, completions, visibleStart, today, exclusionKeys);
               const rate = performance.expected ? Math.round((performance.checked / performance.expected) * 100) : 0;
               const activeSince = dailyActiveStart(item) > visibleStart ? dailyActiveStart(item) : visibleStart;
               return (
                 <button
                   type="button"
-                  className="daily-performance-row"
+                  className={`daily-performance-row ${selectedDailyId === item.id ? "selected" : ""}`}
                   key={`performance-${item.id}`}
+                  aria-pressed={selectedDailyId === item.id}
                   onClick={() => {
+                    setSelectedDailyId((current) => current === item.id ? null : item.id);
+                  }}
+                  onDoubleClick={() => {
                     setEditorItem(item);
                     setEditorOpen(true);
                   }}
