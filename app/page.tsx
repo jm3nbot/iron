@@ -2850,6 +2850,8 @@ function DailyView({
   const [exclusionEditorOpen, setExclusionEditorOpen] = useState(false);
   const [exclusionReason, setExclusionReason] = useState("");
   const [exclusionBusy, setExclusionBusy] = useState(false);
+  const [manualLogDailyId, setManualLogDailyId] = useState("");
+  const [manualLogBusy, setManualLogBusy] = useState(false);
   const today = dateKey(new Date());
   const [selectedTrackerDate, setSelectedTrackerDate] = useState(today);
   const exclusionKeys = useMemo(() => new Set(exclusions.map((entry) => entry.date)), [exclusions]);
@@ -2907,11 +2909,9 @@ function DailyView({
   );
   const selectedDayItems = selectedExclusion
     ? []
-    : items.filter(
-        (item) =>
-          selectedCompletedIds.has(item.id) ||
-          isDailyDueOn(item, selectedTrackerDate, completions),
-      )
+    : (selectedTrackerDate <= today
+        ? [...items]
+        : items.filter((item) => isDailyDueOn(item, selectedTrackerDate, completions)))
     .sort((left, right) => {
       const completionDifference =
         Number(selectedCompletedIds.has(right.id)) - Number(selectedCompletedIds.has(left.id));
@@ -2920,6 +2920,10 @@ function DailyView({
   const selectedCompletedCount = selectedDayItems.filter((item) =>
     selectedCompletedIds.has(item.id),
   ).length;
+  const selectedScheduledCount = selectedDayItems.filter((item) =>
+    isDailyDueOn(item, selectedTrackerDate, completions),
+  ).length;
+  const manualLogItems = selectedDayItems.filter((item) => !selectedCompletedIds.has(item.id));
   const recentStartDate = parseDateKey(today);
   recentStartDate.setDate(recentStartDate.getDate() - 29);
   const recentStart = dateKey(recentStartDate);
@@ -2986,6 +2990,21 @@ function DailyView({
       setError(restoreError instanceof Error ? restoreError.message : "Date could not be restored.");
     } finally {
       setExclusionBusy(false);
+    }
+  };
+
+  const submitManualLog = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!manualLogDailyId || selectedExclusion || selectedTrackerDate > today) return;
+    setManualLogBusy(true);
+    setError("");
+    try {
+      await completeItem(manualLogDailyId, selectedTrackerDate);
+      setManualLogDailyId("");
+    } catch (logError) {
+      setError(logError instanceof Error ? logError.message : "Daily could not be logged.");
+    } finally {
+      setManualLogBusy(false);
     }
   };
 
@@ -3190,7 +3209,11 @@ function DailyView({
                     title={title}
                     aria-label={title}
                     aria-pressed={day.key === selectedTrackerDate}
-                    onClick={() => setSelectedTrackerDate(day.key)}
+                    onClick={() => {
+                      setSelectedTrackerDate(day.key);
+                      setManualLogDailyId("");
+                      setExclusionEditorOpen(false);
+                    }}
                   />
                 );
               })}
@@ -3207,7 +3230,7 @@ function DailyView({
                       ? "excluded"
                       : selectedTrackerDate > today
                         ? `${selectedDayItems.length} available`
-                        : `${selectedCompletedCount} of ${selectedDayItems.length} completed`}
+                        : `${selectedCompletedCount} completed · ${selectedScheduledCount} scheduled`}
                   </em>
                   {selectedExclusion ? (
                     <button type="button" onClick={() => void restoreSelectedDate()} disabled={exclusionBusy}>Restore date</button>
@@ -3229,27 +3252,51 @@ function DailyView({
                   </div>
                 </form>
               )}
+              {!selectedExclusion && selectedTrackerDate <= today && manualLogItems.length > 0 && (
+                <form className="daily-manual-log" onSubmit={(event) => void submitManualLog(event)}>
+                  <label htmlFor="daily-manual-log-select">Log a daily for this date</label>
+                  <div>
+                    <select
+                      id="daily-manual-log-select"
+                      value={manualLogDailyId}
+                      onChange={(event) => setManualLogDailyId(event.target.value)}
+                    >
+                      <option value="">Choose a routine…</option>
+                      {manualLogItems.map((item) => (
+                        <option value={item.id} key={`manual-${item.id}`}>
+                          {item.content}
+                        </option>
+                      ))}
+                    </select>
+                    <button type="submit" className="primary" disabled={!manualLogDailyId || manualLogBusy}>
+                      {manualLogBusy ? "Logging…" : "Log completion"}
+                    </button>
+                  </div>
+                </form>
+              )}
               {selectedDayItems.length ? (
                 <div className="daily-day-inspector-list">
                   {selectedDayItems.map((item) => {
                     const completed = selectedCompletedIds.has(item.id);
                     const future = selectedTrackerDate > today;
+                    const scheduled = isDailyDueOn(item, selectedTrackerDate, completions);
+                    const status = completed ? "completed" : future ? "upcoming" : scheduled ? "missed" : "unscheduled";
                     return (
                       <button
                         type="button"
-                        className={completed ? "completed" : future ? "upcoming" : "missed"}
+                        className={status}
                         key={`day-${selectedTrackerDate}-${item.id}`}
                         onClick={() => {
                           setEditorItem(item);
                           setEditorOpen(true);
                         }}
                       >
-                        <i aria-hidden="true">{completed ? "✓" : future ? "→" : "·"}</i>
+                        <i aria-hidden="true">{completed ? "✓" : future ? "→" : scheduled ? "·" : "—"}</i>
                         <span>
                           <strong>{item.content}</strong>
                           <small>{dailyScheduleLabel(item)}</small>
                         </span>
-                        <em>{completed ? "Completed" : future ? "Available" : "Missed"}</em>
+                        <em>{completed ? "Completed" : future ? "Available" : scheduled ? "Missed" : "Not scheduled"}</em>
                       </button>
                     );
                   })}

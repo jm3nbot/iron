@@ -3558,6 +3558,61 @@ select:focus-visible {
   color: var(--ink);
 }
 
+.daily-manual-log {
+  display: grid;
+  gap: 7px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--iron);
+  background: rgba(166,95,56,.035);
+}
+
+.daily-manual-log label {
+  color: var(--paper-muted);
+  font-size: 8px;
+  font-weight: 620;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.daily-manual-log > div {
+  display: flex;
+  gap: 7px;
+}
+
+.daily-manual-log select {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--steel);
+  border-radius: 2px;
+  background: var(--ink-raised);
+  color: var(--paper);
+  font-size: 10px;
+  outline: none;
+}
+
+.daily-manual-log select:focus {
+  border-color: var(--copper);
+}
+
+.daily-manual-log button {
+  padding: 6px 9px;
+  border: 1px solid var(--copper);
+  border-radius: 2px;
+  background: var(--copper);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 8px;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.daily-manual-log button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
 .daily-day-inspector-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3614,6 +3669,11 @@ select:focus-visible {
   color: var(--copper);
 }
 
+.daily-day-inspector-list .unscheduled i {
+  border-style: dashed;
+  color: var(--paper-faint);
+}
+
 .daily-day-inspector-list > button > span {
   display: grid;
   gap: 2px;
@@ -3636,6 +3696,7 @@ select:focus-visible {
 .daily-day-inspector-list .completed em { color: var(--success); }
 .daily-day-inspector-list .missed em { color: var(--danger); }
 .daily-day-inspector-list .upcoming em { color: var(--copper-light); }
+.daily-day-inspector-list .unscheduled em { color: var(--paper-faint); }
 
 .daily-day-inspector-empty {
   margin: 0;
@@ -5123,6 +5184,10 @@ select:focus-visible {
 
   .daily-day-inspector-list > button {
     grid-template-columns: 24px minmax(0, 1fr) auto;
+  }
+
+  .daily-manual-log > div {
+    flex-direction: column;
   }
 
   .daily-performance-row {
