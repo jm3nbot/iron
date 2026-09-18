@@ -1857,6 +1857,7 @@ select:focus-visible {
 
 .agenda-calendar-notice {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -2129,6 +2130,12 @@ select:focus-visible {
 .agenda-event.google-event::before {
   border-radius: 1px;
   background: #5279a8;
+}
+
+.agenda-event.google-task::before {
+  border: 1px solid #5279a8;
+  border-radius: 50%;
+  background: transparent;
 }
 
 .agenda-event:hover {

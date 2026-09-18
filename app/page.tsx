@@ -13,6 +13,7 @@ import {
 } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
+import type { GoogleAgendaEntry } from "@/lib/google-agenda";
 
 type Section = "now" | "projects" | "library";
 type View = Section | "archive" | "agenda" | "daily";
@@ -97,16 +98,7 @@ type QuickLink = {
   updatedAt: string;
 };
 
-type GoogleCalendarEvent = {
-  id: string;
-  title: string;
-  description: string;
-  location: string;
-  htmlLink: string;
-  start: string;
-  end: string;
-  allDay: boolean;
-};
+type GoogleCalendarEvent = GoogleAgendaEntry;
 
 type SharedPreview = {
   id: string;
@@ -3492,12 +3484,17 @@ function AgendaView({
   const [agendaCapture, setAgendaCapture] = useState("");
   const [agendaZoom, setAgendaZoom] = useState(1);
   const [googleEvents, setGoogleEvents] = useState<GoogleCalendarEvent[]>([]);
+  const googleRequestId = useRef(0);
   const [googleCalendar, setGoogleCalendar] = useState({
     configured: true,
     connected: false,
     calendarEmail: "",
     loading: true,
     error: "",
+    needsReconnect: false,
+    tasksError: "",
+    tasksNeedReconnect: false,
+    tasksApiDisabled: false,
   });
 
   useEffect(() => {
@@ -3593,6 +3590,8 @@ function AgendaView({
   }, [monthCursor]);
 
   const loadGoogleCalendar = useCallback(async () => {
+    const requestId = ++googleRequestId.current;
+    setGoogleCalendar((current) => ({ ...current, loading: true }));
     const first = new Date(monthCursor.getFullYear(), monthCursor.getMonth(), 1);
     first.setDate(first.getDate() - 8);
     const last = new Date(monthCursor.getFullYear(), monthCursor.getMonth() + 1, 1);
@@ -3608,7 +3607,12 @@ function AgendaView({
         calendarEmail?: string;
         events?: GoogleCalendarEvent[];
         error?: string;
+        needsReconnect?: boolean;
+        tasksError?: string;
+        tasksNeedReconnect?: boolean;
+        tasksApiDisabled?: boolean;
       };
+      if (requestId !== googleRequestId.current) return;
       setGoogleEvents(result.events ?? []);
       setGoogleCalendar({
         configured: result.configured !== false,
@@ -3616,8 +3620,13 @@ function AgendaView({
         calendarEmail: result.calendarEmail ?? "",
         loading: false,
         error: result.error ?? "",
+        needsReconnect: Boolean(result.needsReconnect),
+        tasksError: result.tasksError ?? "",
+        tasksNeedReconnect: Boolean(result.tasksNeedReconnect),
+        tasksApiDisabled: Boolean(result.tasksApiDisabled),
       });
     } catch {
+      if (requestId !== googleRequestId.current) return;
       setGoogleCalendar((current) => ({
         ...current,
         loading: false,
@@ -3630,7 +3639,13 @@ function AgendaView({
     const frame = window.requestAnimationFrame(() => {
       void loadGoogleCalendar();
     });
-    return () => window.cancelAnimationFrame(frame);
+    const refresh = () => { void loadGoogleCalendar(); };
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("focus", refresh);
+      googleRequestId.current += 1;
+    };
   }, [loadGoogleCalendar]);
 
   const connectGoogleCalendar = async () => {
@@ -3656,9 +3671,10 @@ function AgendaView({
     if (!window.confirm("Disconnect Google Calendar from Ink & Iron?")) return;
     const response = await authenticatedFetch("/api/calendar/google", { method: "DELETE" });
     if (!response.ok) return;
+    googleRequestId.current += 1;
     setGoogleEvents([]);
     setSelectedGoogleEventId(null);
-    setGoogleCalendar((current) => ({ ...current, connected: false, calendarEmail: "" }));
+    setGoogleCalendar((current) => ({ ...current, connected: false, calendarEmail: "", loading: false, error: "", needsReconnect: false, tasksError: "", tasksNeedReconnect: false, tasksApiDisabled: false }));
   };
 
   const selectedDayItems = eventsByDate.get(selectedDate) ?? [];
@@ -3784,14 +3800,16 @@ function AgendaView({
             className="google-calendar-connect"
             disabled={googleCalendar.loading}
             title={googleCalendar.calendarEmail || googleCalendar.error || "Connect Google Calendar"}
-            onClick={() => void (googleCalendar.connected ? loadGoogleCalendar() : connectGoogleCalendar())}
+            onClick={() => void (googleCalendar.connected && !googleCalendar.needsReconnect && !googleCalendar.tasksNeedReconnect ? loadGoogleCalendar() : connectGoogleCalendar())}
           >
             <span aria-hidden="true">G</span>
             <strong>
               {googleCalendar.loading
                 ? "Calendar…"
+                : googleCalendar.needsReconnect || googleCalendar.tasksNeedReconnect
+                  ? "Reconnect Google"
                 : googleCalendar.connected
-                  ? "Google synced"
+                  ? googleCalendar.error || googleCalendar.tasksError ? "Refresh Google" : "Google synced"
                   : googleCalendar.configured
                     ? "Connect Google"
                     : "Google setup"}
@@ -3812,9 +3830,12 @@ function AgendaView({
         </div>
       </div>
 
-      {googleCalendar.error && (
+      {(googleCalendar.error || googleCalendar.tasksError) && (
         <div className="agenda-calendar-notice" role="status">
-          <span>{googleCalendar.error}</span>
+          <span>{[googleCalendar.error, googleCalendar.tasksError].filter(Boolean).join(" ")}</span>
+          {googleCalendar.tasksApiDisabled && (
+            <a href="https://console.cloud.google.com/apis/library/tasks.googleapis.com" target="_blank" rel="noreferrer">Enable Google Tasks API ↗</a>
+          )}
           {!googleCalendar.configured && <em>OAuth credentials are required once to activate it.</em>}
         </div>
       )}
@@ -3895,9 +3916,9 @@ function AgendaView({
                         .map((event) => (
                           <button
                             type="button"
-                            className="agenda-event google-event"
+                            className={`agenda-event google-event ${event.kind === "task" ? "google-task" : ""}`}
                             key={`google-${event.id}`}
-                            title={event.title}
+                            title={`${event.kind === "task" ? "Google Task" : "Google Calendar"}: ${event.title}`}
                             onClick={(clickEvent) => {
                               clickEvent.stopPropagation();
                               setSelectedDate(key);
@@ -3952,8 +3973,8 @@ function AgendaView({
                       setSelectedGoogleEventId(event.id);
                     }}
                   >
-                    <i className="google-event-dot">G</i>
-                    <span>{event.title}<small>Google Calendar</small></span>
+                    <i className="google-event-dot">{event.kind === "task" ? "✓" : "G"}</i>
+                    <span>{event.title}<small>{event.kind === "task" ? `Google Tasks · ${event.taskList}` : "Google Calendar"}</small></span>
                     <em>›</em>
                   </button>
                 ))}
@@ -4054,6 +4075,7 @@ function AgendaView({
 }
 
 function GoogleCalendarInspector({ event }: { event: GoogleCalendarEvent }) {
+  const isTask = event.kind === "task";
   const timeLabel = event.allDay
     ? "All day"
     : new Date(event.start).toLocaleTimeString(undefined, {
@@ -4063,18 +4085,19 @@ function GoogleCalendarInspector({ event }: { event: GoogleCalendarEvent }) {
   return (
     <div className="agenda-inspector google-inspector">
       <div className="agenda-inspector-label">
-        <span>Google Calendar</span>
+        <span>{isTask ? "Google Tasks" : "Google Calendar"}</span>
         <i>Synced</i>
       </div>
       <strong className="google-inspector-title">{event.title}</strong>
       <dl>
-        <div><dt>When</dt><dd>{timeLabel}</dd></div>
+        <div><dt>{isTask ? "Scheduled" : "When"}</dt><dd>{isTask ? fullDateLabel(event.start) : timeLabel}</dd></div>
+        {isTask && event.taskList && <div><dt>List</dt><dd>{event.taskList}</dd></div>}
         {event.location && <div><dt>Where</dt><dd>{event.location}</dd></div>}
       </dl>
       {event.description && <p>{event.description}</p>}
       {event.htmlLink && (
         <a href={event.htmlLink} target="_blank" rel="noreferrer">
-          Open in Google Calendar <span aria-hidden="true">↗</span>
+          Open in {isTask ? "Google Tasks" : "Google Calendar"} <span aria-hidden="true">↗</span>
         </a>
       )}
     </div>

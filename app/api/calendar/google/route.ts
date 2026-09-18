@@ -1,9 +1,11 @@
 import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
 import { supabasePublishableKey, supabaseUrl } from "@/lib/supabase-config";
+import { loadGoogleAgenda } from "@/lib/google-agenda";
 
 export const dynamic = "force-dynamic";
 
 const calendarScope = "https://www.googleapis.com/auth/calendar.events.readonly";
+const tasksScope = "https://www.googleapis.com/auth/tasks.readonly";
 
 function googleConfig() {
   return {
@@ -132,7 +134,7 @@ export async function POST(request: Request) {
       client_id: config.clientId,
       redirect_uri: redirectUri,
       response_type: "code",
-      scope: `openid email ${calendarScope}`,
+      scope: `openid email ${calendarScope} ${tasksScope}`,
       access_type: "offline",
       prompt: "consent",
       include_granted_scopes: "true",
@@ -253,44 +255,12 @@ export async function GET(request: Request) {
     const to = /^\d{4}-\d{2}-\d{2}$/.test(incoming.searchParams.get("to") ?? "")
       ? incoming.searchParams.get("to")!
       : fallbackTo.toISOString().slice(0, 10);
-    const endpoint = new URL("https://www.googleapis.com/calendar/v3/calendars/primary/events");
-    endpoint.search = new URLSearchParams({
-      timeMin: new Date(`${from}T00:00:00`).toISOString(),
-      timeMax: new Date(`${to}T23:59:59`).toISOString(),
-      singleEvents: "true",
-      orderBy: "startTime",
-      maxResults: "150",
-    }).toString();
-    const calendarResponse = await fetch(endpoint, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    const calendarData = (await calendarResponse.json()) as {
-      items?: Array<{
-        id: string;
-        summary?: string;
-        description?: string;
-        location?: string;
-        htmlLink?: string;
-        start?: { date?: string; dateTime?: string };
-        end?: { date?: string; dateTime?: string };
-      }>;
-      error?: { message?: string };
-    };
-    if (!calendarResponse.ok) throw new Error(calendarData.error?.message ?? "Google Calendar could not be loaded.");
+    const agenda = await loadGoogleAgenda(accessToken, from, to);
     return Response.json({
       configured: true,
       connected: true,
       calendarEmail: connection.calendar_email,
-      events: (calendarData.items ?? []).map((event) => ({
-        id: event.id,
-        title: event.summary || "Untitled event",
-        description: event.description ?? "",
-        location: event.location ?? "",
-        htmlLink: event.htmlLink ?? "",
-        start: event.start?.dateTime ?? event.start?.date ?? "",
-        end: event.end?.dateTime ?? event.end?.date ?? "",
-        allDay: Boolean(event.start?.date),
-      })),
+      ...agenda,
     });
   } catch (calendarError) {
     return Response.json(
@@ -298,6 +268,7 @@ export async function GET(request: Request) {
         configured: true,
         connected: true,
         calendarEmail: connection.calendar_email,
+        needsReconnect: true,
         events: [],
         error: calendarError instanceof Error ? calendarError.message : "Google Calendar could not be loaded.",
       },
