@@ -1,116 +1,66 @@
 # Ink & Iron
 
-A personal command center running on
-[Vinext](https://github.com/cloudflare/vinext). It supports Cloudflare D1 on
-Sites and Neon Postgres on Vercel.
+Ink & Iron is a personal workspace for organizing projects, tasks, reference material, and daily routines. Its focused interface brings current work, long-term plans, and a calendar into one place.
 
-## Prerequisites
+## Features
 
-- Node.js `24.x`
+- **Now and Projects:** organize work with nested items, priorities, notes, links, and deadlines.
+- **Library and Archive:** keep reference material accessible and retain completed work.
+- **Agenda:** view workspace deadlines alongside Google Calendar events and scheduled Google Tasks.
+- **Daily:** plan recurring routines with weekday schedules, weekly targets, and historical completion tracking.
+- **Collaboration:** share workspace items and projects with other users.
+- **Synchronization:** preserve pending edits locally and surface conflicts when devices change the same work.
 
-## Quick Start
+## Stack
+
+React 19, TypeScript, Vinext/Vite, Tailwind CSS, and Supabase. The repository also includes Cloudflare D1 and Neon Postgres adapters, Drizzle migration tooling, and a Vercel build configuration.
+
+## Local development
+
+Requires Node.js 24.x and npm.
 
 ```bash
-npm install
+npm ci
+cp .env.example .env.local
 npm run dev
-npm run build
 ```
 
-## Deploy to Vercel
+Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` to your own Supabase project. Apply the migrations in `supabase/migrations/` in order and configure authentication. The `username-login` Edge Function source is in `supabase/functions/username-login/`.
 
-The repository includes `vercel.json`, a Nitro Vercel build, and a lightweight
-`public/fallback/index.html` fallback. It lives away from `/` so it cannot
-override the real application route. Import the GitHub repository into Vercel
-and deploy it normally.
+The active workspace API routes use Supabase authentication and data storage. The example environment and configuration fallbacks point to an existing hosted project; override both values for an independent installation. Browser caches preserve local work and pending changes, but do not replace backend setup for shared features.
 
-The app works immediately with device-local browser storage. To make changes
-persist across devices:
+## Configuration
 
-1. Open the Vercel project.
-2. Add a Neon Postgres integration from the Vercel Marketplace.
-3. Confirm the integration supplies `DATABASE_URL`.
-4. Redeploy.
+| Variable | Purpose |
+| --- | --- |
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Browser-safe Supabase publishable key |
+| `GOOGLE_CALENDAR_CLIENT_ID` | Google OAuth client ID for Agenda |
+| `GOOGLE_CALENDAR_CLIENT_SECRET` | Server-side Google OAuth client secret |
+| `GOOGLE_CALENDAR_TOKEN_SECRET` | Secret used to protect stored Google credentials |
+| `SITE_URL` | Public application origin for OAuth redirects |
+| `DATABASE_URL` | Optional Postgres connection for the database adapter |
 
-The first API request creates the `workspace_items` table and seeds the initial
-workspace automatically.
+For Google integration, enable Calendar and Tasks APIs and follow [the Agenda setup notes](docs/google-agenda.md). Keep server credentials outside version control. Publishable keys rely on database access controls; never substitute a privileged secret key in a `NEXT_PUBLIC_` variable. See [Supabase API key documentation](https://supabase.com/docs/guides/getting-started/api-keys).
 
-This starter does not use `wrangler.jsonc`.
+## Commands
 
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```bash
+npm run build          # Build the application
+npm start              # Serve the production build
+npm run build:vercel   # Build using the Vercel preset
+npm run lint           # Run ESLint
+npm test               # Build and run the repository's test suite
+npm run db:generate    # Generate Drizzle migrations for the adapter schema
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+`vercel.json` selects the Vercel build command. Configure environment variables on the deployment platform before deploying. Email reminder runtime is currently disabled; its notes are retained in `vaulted-features/email-reminders/`.
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+## Repository layout
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+- `app/`: interface and API routes.
+- `lib/`: authentication, Google integration, synchronization, and conflict handling.
+- `supabase/`: backend migrations and Edge Function source.
+- `db/` and `drizzle/`: database adapters and adapter migration history.
+- `tests/`: rendering, API, synchronization, and Agenda checks.
+- `public/`: application icons, branding, and static assets.
