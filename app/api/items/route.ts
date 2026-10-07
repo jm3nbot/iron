@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
 import { supabasePublishableKey, supabaseUrl } from "@/lib/supabase-config";
+import { conflictingFields } from "@/lib/workspace-conflicts";
 
 export const dynamic = "force-dynamic";
 
@@ -133,19 +134,18 @@ export async function GET(request: Request) {
   const auth = await requireUser(request);
   if (auth.response) return auth.response;
 
-  const { data, error } = await auth.supabase
-    .from("workspace_items")
-    .select("*")
-    .order("section")
-    .order("group_name")
-    .order("position")
-    .order("created_at");
-
-  if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+  const rows: WorkspaceRow[] = [];
+  // Supabase caps a response at 1,000 rows. Archives must not hide newer entries.
+  for (let offset = 0; ; offset += 1000) {
+    const { data, error } = await auth.supabase
+      .from("workspace_items")
+      .select("*")
+      .order("id")
+      .range(offset, offset + 999);
+    if (error) return Response.json({ error: error.message }, { status: 500 });
+    rows.push(...(data ?? []) as WorkspaceRow[]);
+    if (!data || data.length < 1000) break;
   }
-
-  const rows = (data ?? []) as WorkspaceRow[];
   const [memberResult, projectMemberResult] = await Promise.all([
     auth.supabase.from("workspace_item_members").select("id, item_id, user_id, invite_status"),
     auth.supabase.from("workspace_project_members").select("id, project_name, owner_id, user_id, invite_status"),
@@ -182,6 +182,7 @@ export async function GET(request: Request) {
   );
   const profileIds = [
     ...new Set([
+      auth.user.id,
       ...visibleRows.map((row) => row.user_id),
       ...acceptedMembers.map((member) => member.user_id),
       ...acceptedProjectMembers.map((member) => member.user_id),
@@ -201,6 +202,7 @@ export async function GET(request: Request) {
   );
 
   return Response.json({
+    account: { id: auth.user.id, username: usernames.get(auth.user.id) ?? null },
     items: visibleRows.map((row) =>
       toPublicItem(
         row,
@@ -224,7 +226,7 @@ export async function GET(request: Request) {
       ),
     ),
     storageMode: "hosted",
-  });
+  }, { headers: { "Cache-Control": "private, no-store" } });
 }
 
 export async function POST(request: Request) {
@@ -232,6 +234,10 @@ export async function POST(request: Request) {
   if (auth.response) return auth.response;
 
   const payload = (await request.json()) as Record<string, unknown>;
+  const requestedId = typeof payload.id === "string" ? payload.id : null;
+  if (requestedId && !/^(?:[a-f0-9-]{36}|draft-[a-z0-9-]{1,100})$/i.test(requestedId)) {
+    return Response.json({ error: "Invalid item id." }, { status: 400 });
+  }
   const content = typeof payload.content === "string" ? payload.content.trim() : "";
   const section = isSection(payload.section) ? payload.section : "now";
   const groupName =
@@ -260,7 +266,7 @@ export async function POST(request: Request) {
   }
 
   const row = {
-    id: crypto.randomUUID(),
+    id: requestedId ?? crypto.randomUUID(),
     user_id: auth.user.id,
     content,
     section,
@@ -293,6 +299,17 @@ export async function POST(request: Request) {
     .single();
 
   if (error) {
+    // A retry after a lost response must return the same row, never duplicate it
+    // or overwrite newer edits from another device. Scope this to the owner.
+    if (requestedId && error.code === "23505") {
+      const { data: existing, error: existingError } = await auth.supabase
+        .from("workspace_items")
+        .select("*")
+        .eq("id", requestedId)
+        .eq("user_id", auth.user.id)
+        .single();
+      if (!existingError && existing) return Response.json({ item: toPublicItem(existing as WorkspaceRow), storageMode: "hosted" });
+    }
     return Response.json({ error: error.message }, { status: 500 });
   }
 
@@ -341,18 +358,32 @@ export async function PATCH(request: Request) {
   }
   if (typeof payload.bold === "boolean") update.bold = payload.bold;
 
-  const { data, error } = await auth.supabase
-    .from("workspace_items")
-    .update(update)
-    .eq("id", id)
-    .select("*")
-    .single();
-
-  if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+  // Old clients must refresh rather than replay unversioned, potentially stale edits.
+  if (!("base" in payload)) {
+    return Response.json({ error: "Refresh Ink&Iron before editing." }, { status: 428 });
   }
-
-  return Response.json({ item: toPublicItem(data as WorkspaceRow) });
+  const base = payload.base && typeof payload.base === "object"
+    ? payload.base as Record<string, unknown> : null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = await auth.supabase.from("workspace_items").select("*").eq("id", id).maybeSingle();
+    if (current.error) return Response.json({ error: current.error.message }, { status: 500 });
+    if (!current.data) return Response.json({ conflict: true, item: null }, { status: 409 });
+    const row = current.data as WorkspaceRow;
+    const publicRow = toPublicItem(row);
+    const proposed = toPublicItem({ ...row, ...update } as WorkspaceRow);
+    const edited = Object.fromEntries(Object.entries(proposed).filter(([key, value]) =>
+      key !== "updatedAt" && JSON.stringify(value) !== JSON.stringify(publicRow[key as keyof typeof publicRow])));
+    const conflicts = conflictingFields(publicRow, base, edited);
+    if (conflicts.length) return Response.json({ conflict: true, fields: conflicts, item: publicRow }, { status: 409 });
+    if (!Object.keys(edited).length) return Response.json({ item: publicRow });
+    update.updated_at = new Date(Math.max(Date.now(), Date.parse(row.updated_at) + 1)).toISOString();
+    const saved = await auth.supabase.from("workspace_items").update(update)
+      .eq("id", id).eq("updated_at", row.updated_at).select("*").maybeSingle();
+    if (saved.error) return Response.json({ error: saved.error.message }, { status: 500 });
+    if (saved.data) return Response.json({ item: toPublicItem(saved.data as WorkspaceRow) });
+    // Another writer won the atomic comparison. Re-read and check the edited fields.
+  }
+  return Response.json({ error: "Workspace is busy. Retry this edit." }, { status: 503 });
 }
 
 export async function DELETE(request: Request) {
@@ -365,14 +396,26 @@ export async function DELETE(request: Request) {
     return Response.json({ error: "Missing item id." }, { status: 400 });
   }
 
-  const { error } = await auth.supabase
+  if (!("base" in payload)) return Response.json({ error: "Refresh Ink&Iron before editing." }, { status: 428 });
+  const current = await auth.supabase.from("workspace_items").select("*").eq("id", id).maybeSingle();
+  if (current.error) return Response.json({ error: current.error.message }, { status: 500 });
+  if (!current.data) return Response.json({ ok: true });
+  const row = current.data as WorkspaceRow;
+  const base = payload.base as Record<string, unknown> | null;
+  const editable = Object.fromEntries(Object.entries(toPublicItem(row)).filter(([key]) =>
+    !["updatedAt", "createdAt", "ownerUsername", "sharedWith"].includes(key)));
+  if (!base || Object.entries(editable).some(([key, value]) => JSON.stringify(base[key]) !== JSON.stringify(value))) {
+    return Response.json({ conflict: true, item: toPublicItem(row) }, { status: 409 });
+  }
+  const { data, error } = await auth.supabase
     .from("workspace_items")
     .delete()
-    .eq("id", id);
+    .eq("id", id).eq("updated_at", row.updated_at).select("id");
 
   if (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }
 
+  if (!data?.length) return Response.json({ error: "Workspace changed. Retry." }, { status: 503 });
   return Response.json({ ok: true });
 }

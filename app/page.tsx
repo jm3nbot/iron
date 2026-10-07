@@ -14,11 +14,11 @@ import {
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import type { GoogleAgendaEntry } from "@/lib/google-agenda";
+import { WorkspaceSync, migrateWorkspaceCache, type WorkspaceConflict } from "@/lib/workspace-sync";
 
 type Section = "now" | "projects" | "library";
 type View = Section | "archive" | "agenda" | "daily";
 type Priority = "none" | "high" | "medium" | "low";
-type SaveStatus = "saved" | "saving" | "retry";
 type SortMode = "manual" | "priority" | "recent";
 type AgendaMode = "calendar" | "priority";
 type DailyMode = "today" | "tracker";
@@ -439,7 +439,10 @@ export default function Home() {
   const [activeView, setActiveView] = useState<View>("now");
   const [query, setQuery] = useState("");
   const [capture, setCapture] = useState("");
-  const [, setSaveStatus] = useState<SaveStatus>("saving");
+  const [syncNotice, setSyncNotice] = useState("");
+  const [syncConflicts, setSyncConflicts] = useState<WorkspaceConflict<Item>[]>([]);
+  const [reviewSync, setReviewSync] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -466,18 +469,48 @@ export default function Home() {
   const [capturePhrase, setCapturePhrase] = useState(0);
   const [captureCharacters, setCaptureCharacters] = useState(0);
   const [captureDeleting, setCaptureDeleting] = useState(false);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const captureRef = useRef<HTMLInputElement | null>(null);
   const marqueeCleanupRef = useRef<(() => void) | null>(null);
   const groupToggleTimerRef = useRef<number | null>(null);
+  const workspaceSyncRef = useRef<WorkspaceSync<Item> | null>(null);
+  const workspaceReadRef = useRef(0);
+  const authUserRef = useRef<string | null>(null);
+  const storageFaultRef = useRef(false);
+  const itemsRef = useRef<Item[]>([]);
+  useEffect(() => { itemsRef.current = items; }, [items]);
 
-  const userCacheKey = session ? `${CACHE_KEY}:${session.user.id}` : null;
-  const userQueueKey = session ? `${QUEUE_KEY}:${session.user.id}` : null;
+  const workspaceUserId = session?.user.id ?? null;
+  const userCacheKey = workspaceUserId ? `${CACHE_KEY}:${workspaceUserId}` : null;
+  const userQueueKey = workspaceUserId ? `${QUEUE_KEY}:${workspaceUserId}` : null;
 
   const cacheItems = useCallback((next: Item[]) => {
-    if (userCacheKey) localStorage.setItem(userCacheKey, JSON.stringify(next));
+    if (userCacheKey) {
+      try { localStorage.setItem(userCacheKey, JSON.stringify(next)); }
+      catch { setSyncNotice("Browser storage is full. Keep this tab open and export a recovery copy."); }
+    }
   }, [userCacheKey]);
+
+  const getWorkspaceSync = useCallback(() => {
+    if (!workspaceUserId || !userCacheKey || !userQueueKey) return null;
+    const prefix = `ink-and-iron-sync-v2:${workspaceUserId}:`;
+    if (workspaceSyncRef.current?.prefix !== prefix) {
+      workspaceSyncRef.current = new WorkspaceSync<Item>(localStorage, workspaceUserId);
+    }
+    const sync = workspaceSyncRef.current;
+    migrateWorkspaceCache(localStorage, sync, userCacheKey, userQueueKey, (id, patch): Item | null => {
+      if (!patch.content?.trim()) return null;
+      return {
+        id, content: patch.content, section: "now", groupName: "", url: null,
+        links: [], note: "", parentId: null, priority: "none", dueDate: null,
+        completed: false, archived: false, archivedAt: null, position: 0,
+        indent: 0, bold: false, createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(), ownerId: workspaceUserId,
+        ownerUsername: "", sharedWith: [], ...patch,
+      };
+    });
+    return sync;
+  }, [workspaceUserId, userCacheKey, userQueueKey]);
 
   const authenticatedFetch = useCallback(
     async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -485,11 +518,18 @@ export default function Home() {
         data: { session: currentSession },
       } = await supabase.auth.getSession();
       if (!currentSession) throw new Error("Sign in to continue.");
+      if (currentSession.user.id !== session?.user.id) throw new Error("Account changed. Please retry.");
       const headers = new Headers(init.headers);
       headers.set("Authorization", `Bearer ${currentSession.access_token}`);
-      return fetch(input, { ...init, headers });
+      const options = { ...init, headers, signal: init.signal ?? AbortSignal.timeout(20_000) };
+      const response = await fetch(input, options);
+      if (response.status !== 401) return response;
+      const { data, error } = await supabase.auth.refreshSession();
+      if (error || data.session?.user.id !== session?.user.id) return response;
+      headers.set("Authorization", `Bearer ${data.session.access_token}`);
+      return fetch(input, { ...init, headers, signal: init.signal ?? AbortSignal.timeout(20_000) });
     },
-    [],
+    [session?.user.id],
   );
 
   const loadDaily = useCallback(async () => {
@@ -519,24 +559,19 @@ export default function Home() {
     setCollaborations(data);
   }, [authenticatedFetch]);
 
-  const markSaved = useCallback(() => {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => setSaveStatus("saved"), 350);
-  }, []);
-
   useEffect(() => {
     let active = true;
-    void supabase.auth.getSession().then(({ data }) => {
+    let observedAuthEvent = false;
+    const applySession = (nextSession: Session | null) => {
       if (!active) return;
-      setSession(data.session);
-      setAuthReady(true);
-    });
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
       setAuthReady(true);
-      if (!nextSession) {
+      if (authUserRef.current !== (nextSession?.user.id ?? null) || !nextSession) {
+        authUserRef.current = nextSession?.user.id ?? null;
+        workspaceSyncRef.current = null;
+        workspaceReadRef.current += 1;
+        storageFaultRef.current = false;
+        itemsRef.current = [];
         setItems([]);
         setDailyItems([]);
         setDailyCompletions([]);
@@ -544,8 +579,21 @@ export default function Home() {
         setQuickLinks([]);
         setCollaborations({ incoming: [], outgoing: [], shared: [] });
         setUsername("");
+        setLastSyncedAt(null);
+        setSyncConflicts([]);
+        setReviewSync(false);
+        setSyncNotice("");
         setAccountOpen(false);
       }
+    };
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!observedAuthEvent) applySession(data.session);
+    });
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      observedAuthEvent = true;
+      applySession(nextSession);
     });
     return () => {
       active = false;
@@ -553,98 +601,136 @@ export default function Home() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!session) return;
-    let active = true;
-    void supabase
-      .from("profiles")
-      .select("username")
-      .eq("id", session.user.id)
-      .single()
-      .then(({ data }) => {
-        if (active) {
-          setUsername(data?.username ?? session.user.email?.split("@")[0] ?? "Account");
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [session]);
-
-  const sendPatch = useCallback(
-    async (id: string, patch: Patch) => {
-      if (!userQueueKey) return;
-      setSaveStatus("saving");
-      const body = { id, ...patch };
-      try {
-        const response = await authenticatedFetch("/api/items", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        if (!response.ok) throw new Error("Save failed");
-        const pending = JSON.parse(localStorage.getItem(userQueueKey) ?? "{}") as Record<string, Patch>;
-        delete pending[id];
-        localStorage.setItem(userQueueKey, JSON.stringify(pending));
-        markSaved();
-      } catch {
-        const pending = JSON.parse(localStorage.getItem(userQueueKey) ?? "{}") as Record<string, Patch>;
-        pending[id] = { ...(pending[id] ?? {}), ...patch };
-        localStorage.setItem(userQueueKey, JSON.stringify(pending));
-        setSaveStatus("retry");
-      }
-    },
-    [authenticatedFetch, markSaved, userQueueKey],
-  );
+  const refreshWorkspace = useCallback(async () => {
+    const sync = getWorkspaceSync();
+    if (!sync) return;
+    const checkpoint = sync.checkpoint();
+    const read = ++workspaceReadRef.current;
+    try {
+      const response = await authenticatedFetch("/api/items", { cache: "no-store" });
+      if (!response.ok) throw new Error("Workspace could not refresh.");
+      const data = await response.json() as { items: Item[]; account?: { id: string; username: string | null } };
+      if (!Array.isArray(data.items) || data.account?.id !== workspaceUserId) throw new Error("Workspace account could not be verified.");
+      if (storageFaultRef.current || sync !== workspaceSyncRef.current || read !== workspaceReadRef.current || checkpoint !== sync.checkpoint()) return;
+      const next = sync.merge(data.items);
+      itemsRef.current = next;
+      setItems(next);
+      cacheItems(next);
+      setUsername(data.account.username ?? "Account");
+      setLastSyncedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+      setSyncConflicts(sync.conflicts());
+      if (!sync.pending().length) setSyncNotice("");
+    } catch (error) {
+      if (sync === workspaceSyncRef.current && read === workspaceReadRef.current) setSyncNotice("Could not reach the shared workspace. Showing a local copy; changes are waiting to sync.");
+      throw error;
+    }
+  }, [authenticatedFetch, cacheItems, getWorkspaceSync, workspaceUserId]);
 
   const flushPending = useCallback(async () => {
-    if (!userQueueKey) return;
-    const pending = JSON.parse(localStorage.getItem(userQueueKey) ?? "{}") as Record<string, Patch>;
-    const entries = Object.entries(pending);
-    if (!entries.length) return;
-    for (const [id, patch] of entries) await sendPatch(id, patch);
-  }, [sendPatch, userQueueKey]);
+    let sync: WorkspaceSync<Item> | null = null;
+    try {
+      sync = getWorkspaceSync();
+      if (!sync) return;
+      const activeSync = sync;
+      const drain = () => activeSync.flush(async (write) => {
+        if (workspaceSyncRef.current !== activeSync) throw new Error("Account changed.");
+        const response = await authenticatedFetch("/api/items", {
+          method: write.method,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...write.payload, id: write.id, base: write.base ?? null }),
+        });
+        if (response.status === 409) {
+          const result = await response.json() as { conflict?: boolean; item?: Item | null };
+          if (result.conflict) return { conflict: true, remote: result.item ?? null };
+        }
+        if (!response.ok) throw new Error("Save failed.");
+        if (write.method !== "DELETE") {
+          const result = await response.json() as { item?: Item };
+          if (result.item?.id !== write.id) throw new Error("Server did not confirm the saved line.");
+          return { item: result.item };
+        }
+      });
+      if (sync.pending().length) {
+        setSyncNotice("Saving changes…");
+        if (navigator.locks) await navigator.locks.request(sync.prefix, drain);
+        else await drain();
+      }
+      if (workspaceSyncRef.current === sync && !storageFaultRef.current) setSyncNotice(sync.pending().length ? "Changes waiting to sync. Retry" : "");
+      if (workspaceSyncRef.current === sync) {
+        setSyncConflicts(sync.conflicts());
+        await refreshWorkspace();
+      }
+    } catch {
+      if (!sync || workspaceSyncRef.current === sync) {
+        setSyncNotice("Changes waiting to sync. Keep this browser's site data. Retry");
+      }
+    }
+  }, [authenticatedFetch, getWorkspaceSync, refreshWorkspace]);
+
+  const sendPatch = useCallback(async (id: string, patch: Patch, baseline?: Item) => {
+    try {
+      const sync = getWorkspaceSync();
+      if (!sync) throw new Error("Sign in first.");
+      sync.enqueue("PATCH", id, patch, baseline ?? itemsRef.current.find((item) => item.id === id));
+      await flushPending();
+    } catch {
+      storageFaultRef.current = true;
+      setSyncNotice("Could not protect this edit in browser storage. Keep the tab open and export a recovery copy.");
+    }
+  }, [flushPending, getWorkspaceSync]);
 
   useEffect(() => {
-    if (!authReady || !session || !userCacheKey) {
+    if (!authReady || !userCacheKey) {
       return;
     }
     const cacheKey = userCacheKey;
     let cancelled = false;
     async function load() {
       try {
-        const response = await authenticatedFetch("/api/items", { cache: "no-store" });
-        if (!response.ok) throw new Error("Load failed");
-        const data = (await response.json()) as { items: Item[] };
-        if (!cancelled) {
-          setItems(data.items);
-          cacheItems(data.items);
-          setSaveStatus("saved");
-          void flushPending();
-        }
-      } catch {
+        const sync = getWorkspaceSync();
         const cached = localStorage.getItem(cacheKey);
-        if (cached && !cancelled) {
-          setItems(JSON.parse(cached) as Item[]);
-          setSaveStatus("retry");
-        }
+        if (sync && !cancelled) setItems(sync.merge(cached ? JSON.parse(cached) as Item[] : []));
+        await flushPending();
+      } catch {
+        if (!cancelled) setSyncNotice("Offline or unable to refresh. Your local changes are kept. Retry");
       } finally {
         if (!cancelled) setLoading(false);
       }
     }
     void load();
-    window.addEventListener("online", flushPending);
+    const retry = () => { void flushPending(); };
+    const interval = window.setInterval(retry, 15_000);
+    const onStorage = (event: StorageEvent) => {
+      if (event.key?.startsWith(`ink-and-iron-sync-v2:${workspaceUserId}:`)) {
+        workspaceReadRef.current += 1;
+        retry();
+      }
+    };
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (storageFaultRef.current || workspaceSyncRef.current?.pending().length) { event.preventDefault(); event.returnValue = ""; }
+    };
+    window.addEventListener("online", retry);
+    window.addEventListener("focus", retry);
+    const onVisible = () => { if (document.visibilityState === "visible") retry(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("beforeunload", beforeUnload);
     return () => {
       cancelled = true;
-      window.removeEventListener("online", flushPending);
+      window.clearInterval(interval);
+      window.removeEventListener("online", retry);
+      window.removeEventListener("focus", retry);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("beforeunload", beforeUnload);
     };
   }, [
     authReady,
-    authenticatedFetch,
-    cacheItems,
     flushPending,
-    session,
+    getWorkspaceSync,
+    refreshWorkspace,
     userCacheKey,
+    workspaceUserId,
   ]);
 
   useEffect(() => {
@@ -659,21 +745,14 @@ export default function Home() {
           table: "workspace_items",
         },
         () => {
-          void authenticatedFetch("/api/items", { cache: "no-store" })
-            .then((response) => (response.ok ? response.json() : null))
-            .then((data: { items: Item[] } | null) => {
-              if (!data) return;
-              setItems(data.items);
-              cacheItems(data.items);
-              setSaveStatus("saved");
-            });
+          void refreshWorkspace().catch(() => undefined);
         },
       )
       .subscribe();
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [authenticatedFetch, cacheItems, session]);
+  }, [refreshWorkspace, session]);
 
   useEffect(() => {
     if (!session) return;
@@ -760,13 +839,7 @@ export default function Home() {
       if (!active) return;
       void Promise.all([
         loadCollaborations(),
-        authenticatedFetch("/api/items", { cache: "no-store" })
-          .then((response) => (response.ok ? response.json() : null))
-          .then((data: { items: Item[] } | null) => {
-            if (!data || !active) return;
-            setItems(data.items);
-            cacheItems(data.items);
-          }),
+        refreshWorkspace(),
       ]).catch(() => undefined);
     };
     const frame = window.requestAnimationFrame(reload);
@@ -825,7 +898,7 @@ export default function Home() {
       window.removeEventListener("focus", refreshOnFocus);
       void supabase.removeChannel(channel);
     };
-  }, [authenticatedFetch, cacheItems, loadCollaborations, session]);
+  }, [refreshWorkspace, loadCollaborations, session]);
 
   useEffect(() => {
     if (!session) return;
@@ -948,7 +1021,7 @@ export default function Home() {
   );
 
   const updateItem = useCallback(
-    (id: string, patch: Patch) => {
+    (id: string, patch: Patch, baseline?: Item) => {
       const target = items.find((item) => item.id === id);
       let effectivePatch = patch;
       if (target && patch.completed === true && !target.completed) {
@@ -968,14 +1041,11 @@ export default function Home() {
           position: Math.max(-1, ...siblingPositions) + 1,
         };
       }
-      setItems((current) => {
-        const next = current.map((item) =>
-          item.id === id ? { ...item, ...effectivePatch } : item,
-        );
-        cacheItems(next);
-        return next;
-      });
-      void sendPatch(id, effectivePatch);
+      void sendPatch(id, effectivePatch, baseline);
+      const next = itemsRef.current.map((item) => item.id === id ? { ...item, ...effectivePatch } : item);
+      itemsRef.current = next;
+      setItems(next);
+      cacheItems(next);
     },
     [cacheItems, items, sendPatch],
   );
@@ -996,7 +1066,7 @@ export default function Home() {
       const displayContent = isUrl(clean) ? linkLabel(clean) : clean;
       const timestamp = new Date().toISOString();
       const optimistic: Item = {
-        id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        id: crypto.randomUUID(),
         content: displayContent,
         section,
         groupName,
@@ -1020,39 +1090,22 @@ export default function Home() {
         ownerUsername: username,
         sharedWith: [],
       };
-      setItems((current) => {
-        const next = [...current, optimistic];
-        cacheItems(next);
-        return next;
-      });
-      setSaveStatus("saving");
       try {
-        const response = await authenticatedFetch("/api/items", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            content: displayContent,
-            section,
-            groupName,
-            links: detectedUrl ? [detectedUrl] : [],
-            indent,
-            position: positionOverride,
-            parentId,
-          }),
-        });
-        if (!response.ok) throw new Error("Create failed");
-        const { item } = (await response.json()) as { item: Item };
-        setItems((current) => {
-          const next = current.map((entry) => (entry.id === optimistic.id ? item : entry));
-          cacheItems(next);
-          return next;
-        });
-        markSaved();
+        const sync = getWorkspaceSync();
+        if (!sync) throw new Error("Sign in first.");
+        sync.enqueue("POST", optimistic.id, optimistic, optimistic);
       } catch {
-        setSaveStatus("retry");
+        setSyncNotice("Browser storage is unavailable. This line was not added—copy it somewhere safe and try again.");
+        return false;
       }
+      const next = [...itemsRef.current, optimistic];
+      itemsRef.current = next;
+      setItems(next);
+      cacheItems(next);
+      void flushPending();
+      return true;
     },
-    [authenticatedFetch, cacheItems, items, markSaved, session?.user.id, username],
+    [cacheItems, flushPending, getWorkspaceSync, items, session?.user.id, username],
   );
 
   const createSubItem = useCallback(
@@ -1115,42 +1168,36 @@ export default function Home() {
     setSortMode(next);
   };
 
-  const handleCapture = (event: FormEvent) => {
+  const handleCapture = async (event: FormEvent) => {
     event.preventDefault();
     const value = capture.trim();
     if (!value) return;
-    void createItem(isUrl(value) ? new URL(value).hostname.replace(/^www\./, "") : value, "now", "", isUrl(value) ? value : null);
-    setCapture("");
-    setActiveView("now");
+    const added = await createItem(isUrl(value) ? new URL(value).hostname.replace(/^www\./, "") : value, "now", "", isUrl(value) ? value : null);
+    if (added) {
+      setCapture((current) => current.trim() === value ? "" : current);
+      setActiveView("now");
+    }
   };
 
   const deleteItem = useCallback(
     async (item: Item) => {
       if (!window.confirm(`Permanently delete “${item.content}”?`)) return;
+      try {
+        const sync = getWorkspaceSync();
+        if (!sync) return;
+        sync.enqueue("DELETE", item.id, {}, item);
+      } catch {
+        setSyncNotice("Delete could not be saved locally. Please retry.");
+        return;
+      }
       setItems((current) => {
         const next = current.filter((entry) => entry.id !== item.id);
         cacheItems(next);
         return next;
       });
-      setSaveStatus("saving");
-      try {
-        const response = await authenticatedFetch("/api/items", {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: item.id }),
-        });
-        if (!response.ok) throw new Error("Delete failed");
-        markSaved();
-      } catch {
-        setItems((current) => {
-          const next = [...current, item];
-          cacheItems(next);
-          return next;
-        });
-        setSaveStatus("retry");
-      }
+      await flushPending();
     },
-    [authenticatedFetch, cacheItems, markSaved],
+    [cacheItems, flushPending, getWorkspaceSync],
   );
 
   const saveDailyItem = useCallback(
@@ -1322,14 +1369,9 @@ export default function Home() {
       });
       const result = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(result.error ?? "Invitation could not be updated.");
-      await Promise.all([loadCollaborations(), authenticatedFetch("/api/items", { cache: "no-store" })
-        .then((itemsResponse) => itemsResponse.json())
-        .then((data: { items: Item[] }) => {
-          setItems(data.items);
-          cacheItems(data.items);
-        })]);
+      await Promise.all([loadCollaborations(), refreshWorkspace()]);
     },
-    [authenticatedFetch, cacheItems, loadCollaborations],
+    [authenticatedFetch, refreshWorkspace, loadCollaborations],
   );
 
   const removeCollaboration = useCallback(
@@ -1797,35 +1839,40 @@ export default function Home() {
   const deleteSelection = async () => {
     if (!selectedItems.length) return;
     if (!window.confirm(`Permanently delete ${selectedItems.length} selected items?`)) return;
-    const removed = [...selectedItems];
+    try {
+      const sync = getWorkspaceSync();
+      if (!sync) return;
+      for (const item of selectedItems) sync.enqueue("DELETE", item.id, {}, item);
+    } catch {
+      setSyncNotice("Some deletes could not be queued. Keep the tab open and retry.");
+      return;
+    }
     setItems((current) => {
       const next = current.filter((item) => !selectedIds.has(item.id));
       cacheItems(next);
       return next;
     });
     setSelectedIds(new Set());
-    setSaveStatus("saving");
-    try {
-      const responses = await Promise.all(
-        removed.map((item) =>
-          authenticatedFetch("/api/items", {
-            method: "DELETE",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: item.id }),
-          }),
-        ),
-      );
-      if (responses.some((response) => !response.ok)) throw new Error("Bulk delete failed");
-      markSaved();
-    } catch {
-      setItems((current) => {
-        const ids = new Set(current.map((item) => item.id));
-        const next = [...current, ...removed.filter((item) => !ids.has(item.id))];
-        cacheItems(next);
-        return next;
-      });
-      setSaveStatus("retry");
+    await flushPending();
+  };
+
+  const exportRecovery = () => {
+    if (!session) return;
+    const copies: Record<string, string> = {};
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key && (key === userCacheKey || key === userQueueKey ||
+          key.startsWith(`ink-and-iron-sync-v2:${session.user.id}:`))) {
+        copies[key] = localStorage.getItem(key) ?? "";
+      }
     }
+    const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), items, copies }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `ink-and-iron-recovery-${dateKey(new Date())}.json`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   if (!authReady) {
@@ -1985,6 +2032,7 @@ export default function Home() {
               {accountOpen && (
                 <div className="account-menu" role="menu">
                   <small>{session.user.email}</small>
+                  <small>Workspace {session.user.id.slice(0, 8)} · {lastSyncedAt ? `Synced ${lastSyncedAt}` : "Connecting…"}</small>
                   <button
                     type="button"
                     role="menuitem"
@@ -2003,6 +2051,14 @@ export default function Home() {
                   <button
                     type="button"
                     role="menuitem"
+                    onClick={exportRecovery}
+                  >
+                    Export recovery copy
+                  </button>
+                  {syncConflicts.length > 0 && <button type="button" role="menuitem" onClick={() => setReviewSync(true)}>Review saved differences ({syncConflicts.length})</button>}
+                  <button
+                    type="button"
+                    role="menuitem"
                     onClick={() => void supabase.auth.signOut()}
                   >
                     Log out
@@ -2012,6 +2068,59 @@ export default function Home() {
             </div>
           </div>
         </header>
+
+        {(syncNotice || syncConflicts.length > 0) && (
+          <div className="workspace-sync-notice" role="status">
+            <span>{syncNotice || "Older edits differ from the shared workspace. They are preserved for review; the shared version is shown."}</span>
+            {syncConflicts.length > 0 && <button type="button" onClick={() => setReviewSync((open) => !open)}>Review differences ({syncConflicts.length})</button>}
+            <button type="button" onClick={() => void flushPending().then(() => refreshWorkspace()).catch(() => undefined)}>Retry sync</button>
+            <button type="button" onClick={exportRecovery}>Export copy</button>
+          </div>
+        )}
+
+        {reviewSync && (
+          <section className="sync-review" aria-label="Saved sync differences">
+            <header><strong>Saved differences</strong><button type="button" onClick={() => setReviewSync(false)}>Close</button></header>
+            <p>The shared workspace stays unchanged until you choose to apply an older edit. Copies remain in your recovery export.</p>
+            {syncConflicts.length === 0 && <p>No differences to review.</p>}
+            {syncConflicts.map((conflict) => {
+              const shared = items.find((item) => item.id === conflict.id);
+              return (
+                <article key={conflict.key}>
+                  <strong>{conflict.payload.content ?? conflict.base?.content ?? "Saved line"}</strong>
+                  <small>{new Date(conflict.order).toLocaleString()} · {conflict.method === "DELETE" ? "Delete request" : "Local edit"}</small>
+                  {!shared && <p>This line is no longer in the shared workspace. Export a copy to recover its content.</p>}
+                  {Object.entries(conflict.payload).filter(([key]) => !["id", "updatedAt", "createdAt", "ownerId", "ownerUsername", "sharedWith"].includes(key)).map(([key, value]) => (
+                    <div className="sync-difference" key={key}>
+                      <b>{key}</b>
+                      <span>Shared: {JSON.stringify(shared?.[key as keyof Item] ?? null)}</span>
+                      <span>Local: {JSON.stringify(value)}</span>
+                    </div>
+                  ))}
+                  <footer>
+                    <button type="button" onClick={() => {
+                      const sync = getWorkspaceSync();
+                      if (!sync) return;
+                      try { sync.dismissConflict(conflict.key); setSyncConflicts(sync.conflicts()); }
+                      catch { setSyncNotice("Could not save this choice. Export a recovery copy first."); }
+                    }}>Keep shared version</button>
+                    <button type="button" disabled={!shared} onClick={() => {
+                      const sync = getWorkspaceSync();
+                      if (!sync || !shared) return;
+                      if (conflict.method === "DELETE" && !window.confirm(`Delete “${shared.content}” from the shared workspace?`)) return;
+                      try {
+                        sync.enqueue(conflict.method, conflict.id, conflict.payload, shared);
+                        sync.dismissConflict(conflict.key);
+                        setSyncConflicts(sync.conflicts());
+                        void flushPending();
+                      } catch { setSyncNotice("Could not protect this edit. Export a recovery copy first."); }
+                    }}>{conflict.method === "DELETE" ? "Delete shared line" : "Apply local edit"}</button>
+                  </footer>
+                </article>
+              );
+            })}
+          </section>
+        )}
 
         <div className="document" onPointerDown={startMarquee}>
           {activeView !== "agenda" && activeView !== "daily" && (
@@ -2134,7 +2243,7 @@ export default function Home() {
               </div>
               {activeItems.map((item) => (
                 <ItemLine
-                  key={`${item.id}:${item.content}:${item.note}`}
+                  key={item.id}
                   item={item}
                   selected={selectedIds.has(item.id)}
                   updateItem={updateItem}
@@ -2316,7 +2425,7 @@ export default function Home() {
                     <div className="group-body">
                       {groupItems.map((item) => (
                         <ItemLine
-                          key={`${item.id}:${item.content}:${item.note}`}
+                          key={item.id}
                           item={item}
                           selected={selectedIds.has(item.id)}
                           updateItem={updateItem}
@@ -3465,7 +3574,7 @@ function AgendaView({
   authenticatedFetch,
 }: {
   items: Item[];
-  updateItem: (id: string, patch: Patch) => void;
+  updateItem: (id: string, patch: Patch, baseline?: Item) => void;
   openOriginal: (item: Item) => void;
   onCapture: (value: string) => void;
   zoomPreferenceKey: string;
@@ -4110,17 +4219,19 @@ function AgendaInspector({
   openOriginal,
 }: {
   item: Item;
-  updateItem: (id: string, patch: Patch) => void;
+  updateItem: (id: string, patch: Patch, baseline?: Item) => void;
   openOriginal: (item: Item) => void;
 }) {
-  const [noteDraft, setNoteDraft] = useState(item.note ?? "");
+  const [noteEdit, setNoteEdit] = useState<{ value: string; base: Item } | null>(null);
+  const noteDraft = noteEdit?.value ?? item.note ?? "";
 
   const nextPriority =
     priorityOrder[(priorityOrder.indexOf(item.priority) + 1) % priorityOrder.length];
   const commitNote = () => {
     if (noteDraft !== (item.note ?? "")) {
-      updateItem(item.id, { note: noteDraft });
+      updateItem(item.id, { note: noteDraft }, noteEdit?.base);
     }
+    setNoteEdit(null);
   };
   const addLink = () => {
     const value = window.prompt("Paste a link for this line", "");
@@ -4169,7 +4280,7 @@ function AgendaInspector({
         <textarea
           id={`agenda-note-${item.id}`}
           value={noteDraft}
-          onChange={(event) => setNoteDraft(event.target.value)}
+          onChange={(event) => setNoteEdit((previous) => ({ value: event.target.value, base: previous?.base ?? item }))}
           onBlur={commitNote}
           placeholder="Add context, a reminder, or a thought…"
         />
@@ -4423,7 +4534,7 @@ function ItemLine({
 }: {
   item: Item;
   selected: boolean;
-  updateItem: (id: string, patch: Patch) => void;
+  updateItem: (id: string, patch: Patch, baseline?: Item) => void;
   deleteItem: (item: Item) => void;
   addSubItem: () => void;
   onShare: () => void;
@@ -4433,9 +4544,11 @@ function ItemLine({
   onDragStart: () => void;
   onDrop: () => void;
 }) {
-  const [draft, setDraft] = useState(item.content);
+  const [textEdit, setTextEdit] = useState<{ value: string; base: Item } | null>(null);
+  const draft = textEdit?.value ?? item.content;
   const [noteOpen, setNoteOpen] = useState(false);
-  const [noteDraft, setNoteDraft] = useState(item.note ?? "");
+  const [noteEdit, setNoteEdit] = useState<{ value: string; base: Item } | null>(null);
+  const noteDraft = noteEdit?.value ?? item.note ?? "";
   const [hovered, setHovered] = useState(false);
   const state = dueState(item.dueDate);
 
@@ -4452,12 +4565,9 @@ function ItemLine({
       }
       if (event.key.toLowerCase() === "n") {
         event.preventDefault();
-        setNoteOpen((open) => {
-          if (open && noteDraft !== (item.note ?? "")) {
-            updateItem(item.id, { note: noteDraft });
-          }
-          return !open;
-        });
+        if (noteOpen && noteDraft !== (item.note ?? "")) updateItem(item.id, { note: noteDraft }, noteEdit?.base);
+        if (noteOpen) setNoteEdit(null);
+        setNoteOpen(!noteOpen);
       }
       if (event.key.toLowerCase() === "b") {
         event.preventDefault();
@@ -4466,18 +4576,18 @@ function ItemLine({
     };
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
-  }, [hovered, item.bold, item.id, item.note, noteDraft, updateItem]);
+  }, [hovered, item.bold, item.id, item.note, noteDraft, noteEdit, noteOpen, updateItem]);
 
   const commit = () => {
     const clean = draft.trim() || "Untitled";
-    setDraft(clean);
     const detectedUrl = findUrl(clean);
     const patch: Patch = {};
     if (clean !== item.content) patch.content = clean;
     if (detectedUrl && !(item.links ?? []).includes(detectedUrl)) {
       patch.links = [...(item.links ?? []), detectedUrl];
     }
-    if (Object.keys(patch).length) updateItem(item.id, patch);
+    if (Object.keys(patch).length) updateItem(item.id, patch, textEdit?.base);
+    setTextEdit(null);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -4486,7 +4596,8 @@ function ItemLine({
       event.currentTarget.blur();
     }
     if (event.key === "Escape") {
-      setDraft(item.content);
+      event.currentTarget.dataset.cancelEdit = "true";
+      setTextEdit(null);
       event.currentTarget.blur();
     }
   };
@@ -4510,7 +4621,8 @@ function ItemLine({
   };
 
   const commitNote = () => {
-    if (noteDraft !== (item.note ?? "")) updateItem(item.id, { note: noteDraft });
+    if (noteDraft !== (item.note ?? "")) updateItem(item.id, { note: noteDraft }, noteEdit?.base);
+    setNoteEdit(null);
     if (!noteDraft.trim()) setNoteOpen(false);
   };
 
@@ -4525,12 +4637,9 @@ function ItemLine({
     ) {
       return;
     }
-    setNoteOpen((open) => {
-      if (open && noteDraft !== (item.note ?? "")) {
-        updateItem(item.id, { note: noteDraft });
-      }
-      return !open;
-    });
+    if (noteOpen && noteDraft !== (item.note ?? "")) updateItem(item.id, { note: noteDraft }, noteEdit?.base);
+    if (noteOpen) setNoteEdit(null);
+    setNoteOpen(!noteOpen);
   };
 
   return (
@@ -4566,8 +4675,11 @@ function ItemLine({
               width: `${Math.max(12, Math.min(88, draft.length * 2 + 4))}ch`,
             }}
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onBlur={commit}
+            onChange={(event) => setTextEdit((previous) => ({ value: event.target.value, base: previous?.base ?? item }))}
+            onBlur={(event) => {
+              if (event.currentTarget.dataset.cancelEdit) { delete event.currentTarget.dataset.cancelEdit; return; }
+              commit();
+            }}
             onKeyDown={onKeyDown}
           />
         </div>
@@ -4636,7 +4748,7 @@ function ItemLine({
               aria-label={`Note for ${item.content}`}
               placeholder="Add context, a reminder, or a thought…"
               value={noteDraft}
-              onChange={(event) => setNoteDraft(event.target.value)}
+              onChange={(event) => setNoteEdit((previous) => ({ value: event.target.value, base: previous?.base ?? item }))}
               onBlur={commitNote}
             />
             <button
