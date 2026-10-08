@@ -2,6 +2,8 @@
 
 Ink & Iron is a personal workspace for organizing projects, tasks, reference material, and daily routines. Its focused interface brings current work, long-term plans, and a calendar into one place.
 
+![Ink & Iron Now view with the task queue and workspace navigation](docs/images/ink-and-iron-now.png)
+
 ## Features
 
 - **Now and Projects:** organize work with nested items, priorities, notes, links, and deadlines.
