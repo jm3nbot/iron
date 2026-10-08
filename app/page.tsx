@@ -651,7 +651,6 @@ export default function Home() {
         }
       });
       if (sync.pending().length) {
-        setSyncNotice("Saving changes…");
         if (navigator.locks) await navigator.locks.request(sync.prefix, drain);
         else await drain();
       }
