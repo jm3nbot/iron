@@ -19,7 +19,6 @@ export function AgendaConnections({ google, quercus, refreshGoogle, connectGoogl
     error ? "Needs attention" : !ready ? "Checking connection" : connected ? loading ? "Connected · Refreshing" : "Connected" : "Not connected";
   return <>
     <div className="agenda-connections-bar" aria-label="Calendar connections">
-      <span className="connections-label">Calendars</span>
       {(["google", "quercus"] as const).map((provider) => {
         const connection = provider === "google" ? google : quercus;
         const error = provider === "google" ? googleError : quercus.error;
@@ -27,9 +26,9 @@ export function AgendaConnections({ google, quercus, refreshGoogle, connectGoogl
         const label = status(connection.ready, connection.connected, connection.loading, error);
         return <button key={provider} type="button" className="connection-pill" onClick={() => setTab(provider)}
           title={`${name}: ${label}`} aria-label={`${name} connection settings`} aria-haspopup="dialog" aria-expanded={tab === provider}>
-          <span className="provider-letter" aria-hidden="true">{name[0]}</span><strong>{name}</strong>
+          <strong>{name}</strong>
           <i role="img" className={`connection-dot ${error ? "attention" : connection.connected ? "connected" : !connection.ready ? "checking" : ""}`} aria-label={label} />
-          <span className="connection-chevron" aria-hidden="true">⌄</span>
+          <svg className="connection-chevron" aria-hidden="true" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
         </button>;
       })}
     </div>

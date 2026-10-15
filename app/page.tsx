@@ -3887,6 +3887,12 @@ function AgendaView({
             PriorityView
           </button>
         </div>
+        <div className="agenda-ticker" aria-label="Agenda summary">
+          <span><strong>{overdueCount}</strong> <small>Overdue</small></span>
+          <span><strong>{todayCount}</strong> <small>Due today</small></span>
+          <span><strong>{nextWeekCount}</strong> <small>Next 7 days</small></span>
+          <span><strong>{priorityItems.length}</strong> <small>Prioritized</small></span>
+        </div>
         <div className="agenda-zoom" aria-label="Agenda zoom controls">
           <button
             type="button"
@@ -3921,14 +3927,6 @@ function AgendaView({
       {agendaActive && selectedQuercus && <AgendaDialog title="Quercus details" onClose={() => setSelectedQuercusId(null)}>
         <QuercusDetails entry={selectedQuercus} agenda={quercus} />
       </AgendaDialog>}
-
-      <div className="agenda-ticker" aria-label="Agenda summary">
-        <span><strong>{overdueCount}</strong> overdue</span>
-        <span><strong>{todayCount}</strong> due today</span>
-        <span><strong>{nextWeekCount}</strong> next 7 days</span>
-        <span><strong>{priorityItems.length}</strong> prioritized</span>
-        <i aria-hidden="true">Ink &amp; Iron signal / {fullDateLabel(todayKey)}</i>
-      </div>
 
       {mode === "calendar" ? (
         <div className="agenda-calendar-layout">
