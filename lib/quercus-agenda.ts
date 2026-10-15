@@ -20,6 +20,27 @@ export type QuercusEntry = {
   localCompleted: boolean;
 };
 
+export function quercusSubmitted(entry: QuercusEntry) {
+  return entry.kind === "assignment" && (entry.submissionState === "submitted" ||
+    entry.submissionState === "pending_review" ||
+    (entry.submissionState === "graded" && Boolean(entry.submittedAt)));
+}
+
+export function quercusComplete(entry: QuercusEntry) {
+  return entry.localCompleted || entry.excused || quercusSubmitted(entry);
+}
+
+export function quercusStatus(entry: QuercusEntry) {
+  if (entry.kind === "event") return "Event";
+  if (entry.excused) return "Excused";
+  if (entry.submissionState === "submitted") return "Submitted";
+  if (entry.submissionState === "pending_review") return "Submitted · In review";
+  if (entry.submissionState === "graded") return "Graded";
+  if (entry.missing) return "Missing";
+  if (entry.submissionState === "unsubmitted") return "Not submitted";
+  return "Status unavailable";
+}
+
 export class QuercusError extends Error {
   status: number;
   constructor(status: number) {

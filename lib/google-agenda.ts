@@ -11,6 +11,26 @@ export type GoogleAgendaEntry = {
   taskList?: string;
 };
 
+// A temporary failure in one Google source must not erase its previous entries.
+export function mergeGoogleAgenda(previous: GoogleAgendaEntry[], result: {
+  events?: GoogleAgendaEntry[]; connected?: boolean; error?: string; tasksError?: string; needsReconnect?: boolean;
+}) {
+  if (result.connected === false && !result.needsReconnect) return [];
+  const retained = previous.filter((entry) => result.needsReconnect || (entry.kind === "task" ? result.tasksError : result.error));
+  return [...new Map([...retained, ...(result.events ?? [])].map((entry) => [entry.id, entry])).values()];
+}
+
+export class GoogleTokenError extends Error {
+  needsReconnect: boolean;
+  constructor(code?: string) {
+    const needsReconnect = code === "invalid_grant";
+    super(needsReconnect ? "Your Google connection has expired. Reconnect Google to resume syncing."
+      : code === "invalid_client" || code === "unauthorized_client" ? "Google connection setup needs attention on the server."
+      : "Google could not refresh its connection. Try again shortly.");
+    this.needsReconnect = needsReconnect;
+  }
+}
+
 type GoogleError = {
   message?: string;
   errors?: Array<{ reason?: string }>;

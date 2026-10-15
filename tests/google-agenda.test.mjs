@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { loadGoogleAgenda } from "../lib/google-agenda.ts";
+import { loadGoogleAgenda, mergeGoogleAgenda, GoogleTokenError } from "../lib/google-agenda.ts";
 
 const from = "2026-09-01";
 const to = "2026-09-30";
@@ -87,4 +87,24 @@ test("preserves tasks if calendar access fails and requests reconnect for expire
   assert.equal(result.events[0].kind, "task");
   assert.equal(result.needsReconnect, true);
   assert.ok(result.error);
+});
+
+
+test("Google partial failures retain only the affected source; disconnect clears all entries", () => {
+  const event = { id: "event:old", kind: "event" };
+  const task = { id: "task:old", kind: "task" };
+  const updated = { id: "event:new", kind: "event" };
+  assert.deepEqual(mergeGoogleAgenda([event, task], { connected: true, events: [updated], tasksError: "Unavailable" }), [task, updated]);
+  assert.deepEqual(mergeGoogleAgenda([event, task], { connected: true, events: [], error: "Unavailable" }), [event]);
+  assert.deepEqual(mergeGoogleAgenda([event, task], { connected: true, events: [], needsReconnect: true }), [event, task]);
+  assert.deepEqual(mergeGoogleAgenda([event, task], { connected: false, events: [] }), []);
+});
+
+test("Google token failures provide actionable messages and reserve reconnect for expired grants", () => {
+  assert.equal(new GoogleTokenError("invalid_grant").needsReconnect, true);
+  assert.match(new GoogleTokenError("invalid_grant").message, /Reconnect Google/);
+  assert.equal(new GoogleTokenError("server_error").needsReconnect, false);
+  assert.equal(new GoogleTokenError("invalid_client").needsReconnect, false);
+  assert.match(new GoogleTokenError("invalid_client").message, /server/);
+  assert.doesNotMatch(new GoogleTokenError().message, /Bad Request/);
 });

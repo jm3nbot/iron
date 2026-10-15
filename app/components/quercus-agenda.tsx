@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { quercusDate, quercusLink, type QuercusEntry } from "@/lib/quercus-agenda";
+import { quercusDate, quercusLink, quercusComplete, quercusStatus, type QuercusEntry } from "@/lib/quercus-agenda";
 
 type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 type State = {
@@ -10,9 +10,10 @@ type State = {
 };
 const empty: State = { configured: true, connected: false, entries: [], canvasUserId: "", canvasName: "", connectionId: "", lastSynced: "", error: "", needsReconnect: false };
 
-export function useQuercusAgenda(month: Date, authenticatedFetch: Fetch) {
+export function useQuercusAgenda(month: Date, authenticatedFetch: Fetch, active = true) {
   const [state, setState] = useState<State>(empty);
   const [loading, setLoading] = useState(false);
+  const [ready, setReady] = useState(false);
   const [showCompleted, setShowCompleted] = useState(true);
   const generation = useRef(0);
   const mutating = useRef(false);
@@ -40,7 +41,7 @@ export function useQuercusAgenda(month: Date, authenticatedFetch: Fetch) {
       setState((current) => ({ ...empty, ...result, entries: result.connected ? mergeQuercusEntries(current, result) : [] }));
     } catch {
       if (id === generation.current) setState((current) => ({ ...current, error: "Quercus could not refresh. Loaded entries may be out of date." }));
-    } finally { if (id === generation.current) setLoading(false); }
+    } finally { if (id === generation.current) { setLoading(false); setReady(true); } }
   }, [authenticatedFetch, year, monthNumber]);
 
   const latestRefresh = useRef(refresh);
@@ -50,11 +51,12 @@ export function useQuercusAgenda(month: Date, authenticatedFetch: Fetch) {
     return () => { mounted.current = false; generation.current += 1; };
   }, []);
   useEffect(() => {
+    if (!active) return;
     const frame = requestAnimationFrame(() => { void refresh(); });
     const focus = () => { void refresh(); };
     window.addEventListener("focus", focus);
     return () => { cancelAnimationFrame(frame); window.removeEventListener("focus", focus); generation.current += 1; };
-  }, [refresh]);
+  }, [refresh, active]);
 
   const mutate = async (method: string, body?: object, endpoint = "/api/calendar/quercus") => {
     if (mutating.current) return false;
@@ -95,7 +97,8 @@ export function useQuercusAgenda(month: Date, authenticatedFetch: Fetch) {
     if (!saved && mounted.current) setState((current) => ({ ...current, entries: current.entries.map((item) => item.id === entry.id ? { ...item, localCompleted: entry.localCompleted } : item) }));
     return saved;
   };
-  const visible = useMemo(() => state.entries.filter((entry) => showCompleted || !entry.localCompleted), [state.entries, showCompleted]);
+  const visible = useMemo(() => state.entries.filter((entry) => showCompleted || !quercusComplete(entry))
+    .sort((a, b) => Number(quercusComplete(a)) - Number(quercusComplete(b)) || (a.start ?? "").localeCompare(b.start ?? "") || a.title.localeCompare(b.title)), [state.entries, showCompleted]);
   const byDate = useMemo(() => {
     const grouped = new Map<string, QuercusEntry[]>();
     for (const entry of visible) {
@@ -105,7 +108,7 @@ export function useQuercusAgenda(month: Date, authenticatedFetch: Fetch) {
     }
     return grouped;
   }, [visible]);
-  return { ...state, loading, refresh, connect, disconnect, complete, showCompleted, setShowCompleted, visible, byDate };
+  return { ...state, loading, ready, refresh, connect, disconnect, complete, showCompleted, setShowCompleted, visible, byDate };
 }
 
 export function mergeQuercusEntries(current: Pick<State, "canvasUserId" | "entries">, next: { canvasUserId: string; entries: QuercusEntry[]; failedSources?: string[] }) {
@@ -114,26 +117,27 @@ export function mergeQuercusEntries(current: Pick<State, "canvasUserId" | "entri
   return [...new Map([...retained, ...next.entries].map((entry) => [entry.id, entry])).values()];
 }
 
-type QuercusAgenda = ReturnType<typeof useQuercusAgenda>;
+export type QuercusAgenda = ReturnType<typeof useQuercusAgenda>;
 function plainDescription(html: string) {
   const entities: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
   return html.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
     .replace(/<\/?(?:p|div|br|li)\b[^>]*>/gi, "\n").replace(/<[^>]*>/g, "")
     .replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, name: string) => entities[name]).trim();
 }
-export function QuercusControls({ agenda }: { agenda: QuercusAgenda }) {
+export function QuercusSettings({ agenda }: { agenda: QuercusAgenda }) {
   const [editing, setEditing] = useState(false);
   const [token, setToken] = useState("");
-  return <div className="quercus-controls">
-    <div className="quercus-toolbar">
+  return <div className="connection-settings">
+    <div className="connection-identity"><span className="provider-mark">Q</span><div><strong>Quercus</strong><p>{agenda.connected ? agenda.canvasName : "Your UofT courses and assignments"}</p></div></div>
+    <p className="connection-state-label">{agenda.error ? "Needs attention" : !agenda.ready ? "Checking connection…" : agenda.connected ? agenda.loading ? "Connected · Refreshing" : "Connected" : "Not connected"}</p>
+    <div className="connection-actions">
       {agenda.connected ? <>
-        <span>Quercus · {agenda.canvasName}</span>
         <button type="button" disabled={agenda.loading} onClick={() => void agenda.refresh()}>{agenda.loading ? "Syncing…" : "Refresh Quercus"}</button>
         <button type="button" disabled={agenda.loading} onClick={() => setEditing(!editing)}>{agenda.needsReconnect ? "Reconnect Quercus" : "Replace token"}</button>
         <button type="button" disabled={agenda.loading} onClick={() => { setEditing(false); setToken(""); void agenda.disconnect(); }}>Disconnect Quercus</button>
-        <label><input type="checkbox" checked={agenda.showCompleted} onChange={(event) => agenda.setShowCompleted(event.target.checked)} /> Show locally completed</label>
-      </> : <button type="button" disabled={agenda.loading} onClick={() => setEditing(!editing)}>Connect Quercus</button>}
-      {agenda.lastSynced && <small>Last synced {new Date(agenda.lastSynced).toLocaleString()}</small>}
+        <label><input type="checkbox" checked={agenda.showCompleted} onChange={(event) => agenda.setShowCompleted(event.target.checked)} /> Show completed & submitted</label>
+      </> : <button type="button" disabled={agenda.loading || !agenda.ready} onClick={() => setEditing(!editing)}>Connect Quercus</button>}
+      {agenda.lastSynced && <small className="connection-sync-time">Last synced {new Date(agenda.lastSynced).toLocaleString()}</small>}
     </div>
     {editing && <form className="quercus-connect-form" onSubmit={async (event) => {
       event.preventDefault();
@@ -150,18 +154,41 @@ export function QuercusControls({ agenda }: { agenda: QuercusAgenda }) {
   </div>;
 }
 
-export function QuercusEntries({ entries, agenda, title }: { entries: QuercusEntry[]; agenda: QuercusAgenda; title: string }) {
+export function quercusWhen(entry: QuercusEntry) {
+  if (!entry.start) return "No due date";
+  if (entry.allDay) return new Date(`${quercusDate(entry.start)}T12:00:00`).toLocaleDateString("en-CA", { month: "short", day: "numeric" });
+  return new Date(entry.start).toLocaleString("en-CA", { timeZone: "America/Toronto", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+export function QuercusEntries({ entries, onSelect, title }: { entries: QuercusEntry[]; onSelect: (id: string) => void; title: string }) {
   if (!entries.length) return null;
   return <section className="quercus-entries" aria-label={title}>
-    <h3>{title}</h3>
-    {entries.map((entry) => <details key={entry.id} className={entry.localCompleted ? "locally-completed" : ""}>
-      <summary><strong>{entry.title}</strong><small>{entry.course} · {entry.kind === "assignment" ? entry.excused ? "Excused" : entry.submissionState.replaceAll("_", " ") : "Event"}</small></summary>
-      {entry.start && <p>{entry.allDay ? `${quercusDate(entry.start)} · All day` : `${new Date(entry.start).toLocaleString("en-CA", { timeZone: "America/Toronto" })} (Toronto)`}</p>}
-      {entry.kind === "assignment" && <p>Quercus: {entry.excused ? "Excused" : entry.submissionState.replaceAll("_", " ")}{entry.late ? " · Late" : ""}{entry.missing ? " · Missing" : ""}
-        {entry.submittedAt && ` · Submitted ${new Date(entry.submittedAt).toLocaleString()}`}</p>}
-      {entry.description && <p className="quercus-description">{plainDescription(entry.description)}</p>}
-      {entry.assignmentId && <label><input type="checkbox" disabled={agenda.loading} checked={entry.localCompleted} onChange={(event) => void agenda.complete(entry, event.target.checked)} /> Done in Ink &amp; Iron</label>}
-      {quercusLink(entry.htmlLink) && <a href={quercusLink(entry.htmlLink)} target="_blank" rel="noreferrer">Open in Quercus ↗</a>}
-    </details>)}
+    <h3>{title}<span>{entries.length}</span></h3>
+    {entries.map((entry) => <button type="button" key={entry.id} className={`quercus-entry-row ${quercusComplete(entry) ? "is-complete" : ""}`} onClick={() => onSelect(entry.id)}>
+      <span className="quercus-entry-mark" aria-hidden="true">{quercusComplete(entry) ? "✓" : "Q"}</span>
+      <span className="quercus-entry-copy"><strong>{entry.title}</strong><small>{entry.course}</small>
+        <time dateTime={entry.start ?? undefined}>{quercusWhen(entry)}</time>
+        <span className="quercus-entry-status">{quercusStatus(entry)}</span>
+      </span>
+      <span className="entry-open" aria-hidden="true">↗</span>
+    </button>)}
   </section>;
+}
+
+export function QuercusDetails({ entry, agenda }: { entry: QuercusEntry; agenda: QuercusAgenda }) {
+  return <div className="quercus-details">
+    <div className="quercus-detail-course">{entry.course}</div>
+    <h2 className={quercusComplete(entry) ? "is-complete" : ""}>{entry.title}</h2>
+    <div className="quercus-detail-meta">
+      <div><span>{entry.kind === "assignment" ? "Due" : "When"}</span><strong>{quercusWhen(entry)}{entry.start && !entry.allDay ? " · Toronto" : ""}</strong></div>
+      <div><span>Quercus status</span><strong>{quercusStatus(entry)}{entry.late ? " · Late" : ""}{entry.missing ? " · Missing" : ""}</strong></div>
+      {entry.submittedAt && <div><span>Submitted</span><strong>{new Date(entry.submittedAt).toLocaleString("en-CA", { timeZone: "America/Toronto" })} · Toronto</strong></div>}
+    </div>
+    {entry.description && <p className="quercus-description">{plainDescription(entry.description)}</p>}
+    <footer>
+      {entry.assignmentId && <label><input type="checkbox" disabled={agenda.loading} checked={entry.localCompleted} onChange={(event) => void agenda.complete(entry, event.target.checked)} /> Done in Ink &amp; Iron</label>}
+      {quercusLink(entry.htmlLink) && <a href={quercusLink(entry.htmlLink)} target="_blank" rel="noreferrer">Open in Quercus <span aria-hidden="true">↗</span></a>}
+    </footer>
+    {agenda.error && <p className="connection-error" role="status">{agenda.error}</p>}
+  </div>;
 }

@@ -13,8 +13,11 @@ import {
 } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
-import type { GoogleAgendaEntry } from "@/lib/google-agenda";
-import { useQuercusAgenda, QuercusControls, QuercusEntries } from "@/app/components/quercus-agenda";
+import { mergeGoogleAgenda, type GoogleAgendaEntry } from "@/lib/google-agenda";
+import { useQuercusAgenda, QuercusEntries, QuercusDetails } from "@/app/components/quercus-agenda";
+import { AgendaConnections, type GoogleConnectionState } from "@/app/components/agenda-connections";
+import { AgendaDialog } from "@/app/components/agenda-dialog";
+import { quercusComplete, quercusStatus } from "@/lib/quercus-agenda";
 import { WorkspaceSync, migrateWorkspaceCache, type WorkspaceConflict } from "@/lib/workspace-sync";
 
 type Section = "now" | "projects" | "library";
@@ -2143,21 +2146,23 @@ export default function Home() {
             </form>
           )}
 
+          {!loading && <div hidden={activeView !== "agenda" || Boolean(query)}>
+            <AgendaView
+              key={session.user.id}
+              active={activeView === "agenda" && !query}
+              items={items}
+              updateItem={updateItem}
+              openOriginal={openOriginalItem}
+              zoomPreferenceKey={`${AGENDA_ZOOM_KEY}:${session.user.id}`}
+              authenticatedFetch={authenticatedFetch}
+            />
+          </div>}
+
           {loading ? (
             <div className="loading-lines" aria-label="Loading workspace">
               <span /><span /><span /><span />
             </div>
-          ) : !query && activeView === "agenda" ? (
-            <AgendaView
-              key={session.user.id}
-              items={items}
-              updateItem={updateItem}
-              openOriginal={openOriginalItem}
-              onCapture={(value) => void createItem(value, "now")}
-              zoomPreferenceKey={`${AGENDA_ZOOM_KEY}:${session.user.id}`}
-              authenticatedFetch={authenticatedFetch}
-            />
-          ) : !query && activeView === "daily" ? (
+          ) : !query && activeView === "agenda" ? null : !query && activeView === "daily" ? (
             <DailyView
               items={dailyItems}
               completions={dailyCompletions}
@@ -3570,14 +3575,14 @@ function AgendaView({
   items,
   updateItem,
   openOriginal,
-  onCapture,
+  active: agendaActive,
   zoomPreferenceKey,
   authenticatedFetch,
 }: {
   items: Item[];
   updateItem: (id: string, patch: Patch, baseline?: Item) => void;
   openOriginal: (item: Item) => void;
-  onCapture: (value: string) => void;
+  active: boolean;
   zoomPreferenceKey: string;
   authenticatedFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 }) {
@@ -3589,19 +3594,22 @@ function AgendaView({
     () => new Date(today.getFullYear(), today.getMonth(), 1),
   );
   const [selectedDate, setSelectedDate] = useState(todayKey);
-  const quercus = useQuercusAgenda(monthCursor, authenticatedFetch);
+  const quercus = useQuercusAgenda(monthCursor, authenticatedFetch, agendaActive);
   const dayQuercusEntries = quercus.byDate.get(selectedDate) ?? [];
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [selectedGoogleEventId, setSelectedGoogleEventId] = useState<string | null>(null);
-  const [agendaCapture, setAgendaCapture] = useState("");
+  const [selectedQuercusId, setSelectedQuercusId] = useState<string | null>(null);
+  const selectedQuercus = quercus.entries.find((entry) => entry.id === selectedQuercusId);
   const [agendaZoom, setAgendaZoom] = useState(1);
   const [googleEvents, setGoogleEvents] = useState<GoogleCalendarEvent[]>([]);
   const googleRequestId = useRef(0);
-  const [googleCalendar, setGoogleCalendar] = useState({
+  const googleMutating = useRef(false);
+  const [googleCalendar, setGoogleCalendar] = useState<GoogleConnectionState>({
     configured: true,
     connected: false,
     calendarEmail: "",
-    loading: true,
+    ready: false,
+    loading: false,
     error: "",
     needsReconnect: false,
     tasksError: "",
@@ -3702,6 +3710,7 @@ function AgendaView({
   }, [monthCursor]);
 
   const loadGoogleCalendar = useCallback(async () => {
+    if (googleMutating.current) return;
     const requestId = ++googleRequestId.current;
     setGoogleCalendar((current) => ({ ...current, loading: true }));
     const first = new Date(monthCursor.getFullYear(), monthCursor.getMonth(), 1);
@@ -3725,12 +3734,19 @@ function AgendaView({
         tasksApiDisabled?: boolean;
       };
       if (requestId !== googleRequestId.current) return;
-      setGoogleEvents(result.events ?? []);
+      if (!response.ok) {
+        setGoogleCalendar((current) => ({ ...current, loading: false, ready: true,
+          error: result.error === "Bad Request" ? "Google could not refresh. Try again or reconnect in these settings." : result.error || "Google could not refresh. Try again shortly.",
+          needsReconnect: Boolean(result.needsReconnect),
+        }));
+        return;
+      }
+      setGoogleEvents((current) => mergeGoogleAgenda(current, result));
       setGoogleCalendar({
         configured: result.configured !== false,
         connected: Boolean(result.connected),
         calendarEmail: result.calendarEmail ?? "",
-        loading: false,
+        loading: false, ready: true,
         error: result.error ?? "",
         needsReconnect: Boolean(result.needsReconnect),
         tasksError: result.tasksError ?? "",
@@ -3742,12 +3758,14 @@ function AgendaView({
       setGoogleCalendar((current) => ({
         ...current,
         loading: false,
-        error: "Google Calendar is temporarily unavailable.",
+        ready: true,
+        error: "Google Calendar is temporarily unavailable. Your loaded events are still available.",
       }));
     }
   }, [authenticatedFetch, monthCursor]);
 
   useEffect(() => {
+    if (!agendaActive) return;
     const frame = window.requestAnimationFrame(() => {
       void loadGoogleCalendar();
     });
@@ -3758,35 +3776,43 @@ function AgendaView({
       window.removeEventListener("focus", refresh);
       googleRequestId.current += 1;
     };
-  }, [loadGoogleCalendar]);
+  }, [loadGoogleCalendar, agendaActive]);
 
   const connectGoogleCalendar = async () => {
+    if (googleMutating.current) return;
+    googleMutating.current = true;
+    googleRequestId.current += 1;
     setGoogleCalendar((current) => ({ ...current, loading: true, error: "" }));
-    const response = await authenticatedFetch("/api/calendar/google", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "begin" }),
-    });
-    const result = (await response.json()) as { url?: string; error?: string };
-    if (!response.ok || !result.url) {
-      setGoogleCalendar((current) => ({
-        ...current,
-        loading: false,
-        error: result.error ?? "Google Calendar could not start connecting.",
-      }));
-      return;
+    try {
+      const response = await authenticatedFetch("/api/calendar/google", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "begin" }),
+      });
+      const result = await response.json() as { url?: string; error?: string };
+      if (!response.ok || !result.url) throw new Error(result.error || "Google could not start connecting. Try again.");
+      window.location.assign(result.url);
+    } catch (error) {
+      googleMutating.current = false;
+      setGoogleCalendar((current) => ({ ...current, loading: false, ready: true,
+        error: error instanceof Error ? error.message : "Google could not start connecting. Try again." }));
     }
-    window.location.assign(result.url);
   };
 
   const disconnectGoogleCalendar = async () => {
-    if (!window.confirm("Disconnect Google Calendar from Ink & Iron?")) return;
-    const response = await authenticatedFetch("/api/calendar/google", { method: "DELETE" });
-    if (!response.ok) return;
+    if (googleMutating.current) return;
+    googleMutating.current = true;
     googleRequestId.current += 1;
-    setGoogleEvents([]);
-    setSelectedGoogleEventId(null);
-    setGoogleCalendar((current) => ({ ...current, connected: false, calendarEmail: "", loading: false, error: "", needsReconnect: false, tasksError: "", tasksNeedReconnect: false, tasksApiDisabled: false }));
+    setGoogleCalendar((current) => ({ ...current, loading: true }));
+    try {
+      const response = await authenticatedFetch("/api/calendar/google", { method: "DELETE" });
+      if (!response.ok) throw new Error("Google could not disconnect. Try again.");
+      setGoogleEvents([]);
+      setSelectedGoogleEventId(null);
+      setGoogleCalendar((current) => ({ ...current, connected: false, calendarEmail: "", loading: false, ready: true, error: "", needsReconnect: false, tasksError: "", tasksNeedReconnect: false, tasksApiDisabled: false }));
+    } catch {
+      setGoogleCalendar((current) => ({ ...current, loading: false, error: "Google could not disconnect. Try again." }));
+    } finally {
+      googleMutating.current = false;
+    }
   };
 
   const selectedDayItems = eventsByDate.get(selectedDate) ?? [];
@@ -3861,24 +3887,6 @@ function AgendaView({
             PriorityView
           </button>
         </div>
-        <form
-          className="agenda-capture"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (!agendaCapture.trim()) return;
-            onCapture(agendaCapture.trim());
-            setAgendaCapture("");
-          }}
-        >
-          <span aria-hidden="true">+</span>
-          <input
-            aria-label="Add a bullet point to Now"
-            value={agendaCapture}
-            onChange={(event) => setAgendaCapture(event.target.value)}
-            placeholder="What needs your attention?"
-          />
-          <button type="submit" aria-label="Add bullet point">↵</button>
-        </form>
         <div className="agenda-zoom" aria-label="Agenda zoom controls">
           <button
             type="button"
@@ -3906,53 +3914,13 @@ function AgendaView({
             +
           </button>
         </div>
-        <div className={`agenda-connections ${googleCalendar.connected ? "connected" : ""}`}>
-          <button
-            type="button"
-            className="google-calendar-connect"
-            disabled={googleCalendar.loading}
-            title={googleCalendar.calendarEmail || googleCalendar.error || "Connect Google Calendar"}
-            onClick={() => void (googleCalendar.connected && !googleCalendar.needsReconnect && !googleCalendar.tasksNeedReconnect ? loadGoogleCalendar() : connectGoogleCalendar())}
-          >
-            <span aria-hidden="true">G</span>
-            <strong>
-              {googleCalendar.loading
-                ? "Calendar…"
-                : googleCalendar.needsReconnect || googleCalendar.tasksNeedReconnect
-                  ? "Reconnect Google"
-                : googleCalendar.connected
-                  ? googleCalendar.error || googleCalendar.tasksError ? "Refresh Google" : "Google synced"
-                  : googleCalendar.configured
-                    ? "Connect Google"
-                    : "Google setup"}
-            </strong>
-            <i aria-hidden="true">{googleCalendar.connected ? "●" : "↗"}</i>
-          </button>
-          {googleCalendar.connected && (
-            <button
-              type="button"
-              className="google-calendar-disconnect"
-              aria-label="Disconnect Google Calendar"
-              title="Disconnect Google Calendar"
-              onClick={() => void disconnectGoogleCalendar()}
-            >
-              ×
-            </button>
-          )}
-        </div>
+        <AgendaConnections google={googleCalendar} quercus={quercus}
+          refreshGoogle={loadGoogleCalendar} connectGoogle={connectGoogleCalendar} disconnectGoogle={disconnectGoogleCalendar} />
       </div>
 
-      <QuercusControls agenda={quercus} />
-
-      {(googleCalendar.error || googleCalendar.tasksError) && (
-        <div className="agenda-calendar-notice" role="status">
-          <span>{[googleCalendar.error, googleCalendar.tasksError].filter(Boolean).join(" ")}</span>
-          {googleCalendar.tasksApiDisabled && (
-            <a href="https://console.cloud.google.com/apis/library/tasks.googleapis.com" target="_blank" rel="noreferrer">Enable Google Tasks API ↗</a>
-          )}
-          {!googleCalendar.configured && <em>OAuth credentials are required once to activate it.</em>}
-        </div>
-      )}
+      {agendaActive && selectedQuercus && <AgendaDialog title="Quercus details" onClose={() => setSelectedQuercusId(null)}>
+        <QuercusDetails entry={selectedQuercus} agenda={quercus} />
+      </AgendaDialog>}
 
       <div className="agenda-ticker" aria-label="Agenda summary">
         <span><strong>{overdueCount}</strong> overdue</span>
@@ -4045,10 +4013,10 @@ function AgendaView({
                           </button>
                         ))}
                       {dayQuercus.slice(0, Math.max(0, 3 - dayItems.length - dayGoogleEvents.length)).map((entry) => (
-                        <button type="button" className="agenda-event quercus-event" key={entry.id}
-                          title={`Quercus · ${entry.course}: ${entry.title}`}
-                          onClick={(event) => { event.stopPropagation(); selectDate(key); }}>
-                          Q · {entry.title}
+                        <button type="button" className={`agenda-event quercus-event ${quercusComplete(entry) ? "is-complete" : ""}`} key={entry.id}
+                          title={`Quercus · ${entry.course}: ${entry.title} · ${quercusStatus(entry)}`}
+                          onClick={(event) => { event.stopPropagation(); selectDate(key); setSelectedQuercusId(entry.id); }}>
+                          {quercusComplete(entry) ? "✓" : "Q"} · {entry.title}
                         </button>
                       ))}
                       {entryCount > 3 && <span className="agenda-event-more">+{entryCount - 3}</span>}
@@ -4068,6 +4036,7 @@ function AgendaView({
                 {selectedDayItems.length + selectedDayGoogleEvents.length + dayQuercusEntries.length === 1 ? "entry" : "entries"}
               </em>
             </div>
+            <div className="agenda-day-scroll">
             <div className="agenda-day-list">
               {selectedDayItems.length || selectedDayGoogleEvents.length ? <>
                 {selectedDayItems.map((item) => (
@@ -4104,8 +4073,11 @@ function AgendaView({
                 !dayQuercusEntries.length && <p>Nothing scheduled for this day.</p>
               )}
             </div>
-            <QuercusEntries entries={dayQuercusEntries} agenda={quercus} title="Quercus for this day" />
-            <QuercusEntries entries={quercus.visible.filter((entry) => !entry.start)} agenda={quercus} title="Quercus · Needs a date" />
+            <QuercusEntries entries={dayQuercusEntries} onSelect={setSelectedQuercusId} title="Quercus" />
+            {quercus.visible.some((entry) => !entry.start) && <details className="agenda-undated-group">
+              <summary>Without a date <span>{quercus.visible.filter((entry) => !entry.start).length}</span></summary>
+              <QuercusEntries entries={quercus.visible.filter((entry) => !entry.start)} onSelect={setSelectedQuercusId} title="Undated Quercus work" />
+            </details>}
             {selectedItem ? (
               <AgendaInspector key={selectedItem.id} item={selectedItem} updateItem={updateItem} openOriginal={openOriginal} />
             ) : selectedGoogleEvent ? (
@@ -4120,6 +4092,7 @@ function AgendaView({
                 ))}
               </div>
             ) : null}
+            </div>
           </aside>
         </div>
       ) : (

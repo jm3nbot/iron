@@ -10,7 +10,7 @@ paginated. Reading one source can fail without hiding the other source.
    project that owns `GOOGLE_CALENDAR_CLIENT_ID`.
 2. Include `https://www.googleapis.com/auth/tasks.readonly` in the OAuth consent
    screen's data access scopes alongside the existing Calendar read scope.
-3. Existing users select **Reconnect Google** in Agenda and approve task access.
+3. Existing users open **Agenda → Calendars → Google**, select **Reconnect Google**, and approve task access.
    Existing Calendar-only grants cannot access Tasks until consent is granted.
 4. The existing OAuth client, redirect URLs and encrypted credential storage
    are reused. No new environment variables or database migration are needed.
@@ -19,6 +19,12 @@ Tasks appear on their scheduled calendar day as all-day entries, with notes,
 list name and a link back to Google Tasks. Refresh Google or return to the
 window to fetch updates. Completing a task in Google removes it on refresh.
 Tasks without a scheduled date cannot be positioned on the calendar.
+
+Connection settings open in a tabbed dialog shared with Quercus. Loaded entries
+and connection state persist when switching between Now and Agenda. Temporary
+failures retain loaded events and tasks; an amber connection dot points to the
+error in settings without moving the calendar. Expired grants offer **Reconnect
+Google**; temporary failures offer refresh without requiring a new grant.
 
 ## Google API limits
 

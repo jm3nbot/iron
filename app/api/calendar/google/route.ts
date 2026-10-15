@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
 import { supabasePublishableKey, supabaseUrl } from "@/lib/supabase-config";
-import { loadGoogleAgenda } from "@/lib/google-agenda";
+import { GoogleTokenError, loadGoogleAgenda } from "@/lib/google-agenda";
 
 export const dynamic = "force-dynamic";
 
@@ -91,9 +91,10 @@ async function googleTokenRequest(parameters: Record<string, string>) {
     refresh_token?: string;
     expires_in?: number;
     error_description?: string;
+    error?: string;
   };
   if (!response.ok || !data.access_token) {
-    throw new Error(data.error_description ?? "Google did not return a calendar token.");
+    throw new GoogleTokenError(data.error);
   }
   return data;
 }
@@ -226,7 +227,7 @@ export async function GET(request: Request) {
     let accessToken = await decryptToken(connection.access_token_encrypted, config.tokenSecret);
     if (new Date(connection.token_expires_at).getTime() < Date.now() + 60_000) {
       if (!connection.refresh_token_encrypted) {
-        return Response.json({ configured: true, connected: false, needsReconnect: true, events: [] });
+        return Response.json({ configured: true, connected: true, calendarEmail: connection.calendar_email, needsReconnect: true, events: [], error: "Reconnect Google to resume syncing." });
       }
       const refreshToken = await decryptToken(connection.refresh_token_encrypted, config.tokenSecret);
       const token = await googleTokenRequest({
@@ -268,9 +269,9 @@ export async function GET(request: Request) {
         configured: true,
         connected: true,
         calendarEmail: connection.calendar_email,
-        needsReconnect: true,
+        needsReconnect: calendarError instanceof GoogleTokenError && calendarError.needsReconnect,
         events: [],
-        error: calendarError instanceof Error ? calendarError.message : "Google Calendar could not be loaded.",
+        error: calendarError instanceof GoogleTokenError ? calendarError.message : "Google Calendar could not refresh. Try again shortly.",
       },
       { status: 502 },
     );
