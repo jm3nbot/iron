@@ -14,6 +14,7 @@ import {
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import type { GoogleAgendaEntry } from "@/lib/google-agenda";
+import { useQuercusAgenda, QuercusControls, QuercusEntries } from "@/app/components/quercus-agenda";
 import { WorkspaceSync, migrateWorkspaceCache, type WorkspaceConflict } from "@/lib/workspace-sync";
 
 type Section = "now" | "projects" | "library";
@@ -2148,6 +2149,7 @@ export default function Home() {
             </div>
           ) : !query && activeView === "agenda" ? (
             <AgendaView
+              key={session.user.id}
               items={items}
               updateItem={updateItem}
               openOriginal={openOriginalItem}
@@ -3587,6 +3589,8 @@ function AgendaView({
     () => new Date(today.getFullYear(), today.getMonth(), 1),
   );
   const [selectedDate, setSelectedDate] = useState(todayKey);
+  const quercus = useQuercusAgenda(monthCursor, authenticatedFetch);
+  const dayQuercusEntries = quercus.byDate.get(selectedDate) ?? [];
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [selectedGoogleEventId, setSelectedGoogleEventId] = useState<string | null>(null);
   const [agendaCapture, setAgendaCapture] = useState("");
@@ -3938,6 +3942,8 @@ function AgendaView({
         </div>
       </div>
 
+      <QuercusControls agenda={quercus} />
+
       {(googleCalendar.error || googleCalendar.tasksError) && (
         <div className="agenda-calendar-notice" role="status">
           <span>{[googleCalendar.error, googleCalendar.tasksError].filter(Boolean).join(" ")}</span>
@@ -3983,7 +3989,8 @@ function AgendaView({
                 const key = dateKey(day);
                 const dayItems = eventsByDate.get(key) ?? [];
                 const dayGoogleEvents = googleEventsByDate.get(key) ?? [];
-                const entryCount = dayItems.length + dayGoogleEvents.length;
+                const dayQuercus = quercus.byDate.get(key) ?? [];
+                const entryCount = dayItems.length + dayGoogleEvents.length + dayQuercus.length;
                 const outside = day.getMonth() !== monthCursor.getMonth();
                 return (
                   <div
@@ -4037,6 +4044,13 @@ function AgendaView({
                             {event.title}
                           </button>
                         ))}
+                      {dayQuercus.slice(0, Math.max(0, 3 - dayItems.length - dayGoogleEvents.length)).map((entry) => (
+                        <button type="button" className="agenda-event quercus-event" key={entry.id}
+                          title={`Quercus · ${entry.course}: ${entry.title}`}
+                          onClick={(event) => { event.stopPropagation(); selectDate(key); }}>
+                          Q · {entry.title}
+                        </button>
+                      ))}
                       {entryCount > 3 && <span className="agenda-event-more">+{entryCount - 3}</span>}
                     </div>
                   </div>
@@ -4050,8 +4064,8 @@ function AgendaView({
               <span>Selected day</span>
               <strong>{fullDateLabel(selectedDate)}</strong>
               <em>
-                {selectedDayItems.length + selectedDayGoogleEvents.length}{" "}
-                {selectedDayItems.length + selectedDayGoogleEvents.length === 1 ? "entry" : "entries"}
+                {selectedDayItems.length + selectedDayGoogleEvents.length + dayQuercusEntries.length}{" "}
+                {selectedDayItems.length + selectedDayGoogleEvents.length + dayQuercusEntries.length === 1 ? "entry" : "entries"}
               </em>
             </div>
             <div className="agenda-day-list">
@@ -4087,9 +4101,11 @@ function AgendaView({
                   </button>
                 ))}
               </> : (
-                <p>Nothing scheduled for this day.</p>
+                !dayQuercusEntries.length && <p>Nothing scheduled for this day.</p>
               )}
             </div>
+            <QuercusEntries entries={dayQuercusEntries} agenda={quercus} title="Quercus for this day" />
+            <QuercusEntries entries={quercus.visible.filter((entry) => !entry.start)} agenda={quercus} title="Quercus · Needs a date" />
             {selectedItem ? (
               <AgendaInspector key={selectedItem.id} item={selectedItem} updateItem={updateItem} openOriginal={openOriginal} />
             ) : selectedGoogleEvent ? (

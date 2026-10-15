@@ -5339,3 +5339,29 @@ select:focus-visible {
     transition-duration: .01ms !important;
   }
 }
+
+/* Quercus shares the Agenda's compact paper-and-ink presentation. */
+.quercus-controls { margin: 0 0 16px; font-size: 12px; }
+.quercus-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.quercus-toolbar button, .quercus-connect-form button { border: 1px solid var(--steel); background: transparent; color: var(--paper-muted); padding: 7px 10px; border-radius: 4px; cursor: pointer; }
+.quercus-controls button:hover { border-color: var(--copper); color: var(--copper-light); }
+.quercus-controls input[type="checkbox"], .quercus-entries input[type="checkbox"] { accent-color: var(--copper); }
+.quercus-controls button:disabled { opacity: .5; cursor: default; }
+.quercus-toolbar small { opacity: .65; }
+.quercus-toolbar label, .quercus-entries label { display: flex; align-items: center; gap: 6px; }
+.quercus-connect-form { max-width: 540px; padding: 14px 0; }
+.quercus-connect-form p { margin-bottom: 12px; line-height: 1.5; }
+.quercus-connect-form label { display: grid; gap: 7px; }
+.quercus-connect-form input { border: 1px solid var(--line, #d3d0c8); padding: 9px; margin-bottom: 10px; border-radius: 4px; background: transparent; }
+.quercus-connect-form button + button { margin-left: 8px; }
+.quercus-notice { padding: 10px 0; color: #965425; line-height: 1.5; }
+.agenda-event.quercus-event { background: #e8e4f1; color: #55406d; }
+.quercus-entries { padding: 14px; border-top: 1px solid var(--iron); }
+.quercus-entries h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 12px; }
+.quercus-entries details { padding: 10px 0; border-bottom: 1px solid var(--line, #d3d0c8); font-size: 12px; }
+.quercus-entries summary { cursor: pointer; overflow-wrap: anywhere; }
+.quercus-entries summary small { display: block; margin-top: 5px; opacity: .65; }
+.quercus-entries details p { margin: 10px 0; line-height: 1.6; overflow-wrap: anywhere; }
+.quercus-description { max-height: 200px; overflow: auto; white-space: pre-wrap; }
+.quercus-entries details a { display: inline-block; margin-top: 12px; text-decoration: underline; }
+.quercus-entries .locally-completed summary strong { text-decoration: line-through; opacity: .6; }

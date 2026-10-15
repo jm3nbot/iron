@@ -8,7 +8,7 @@ Ink & Iron is a personal workspace for organizing projects, tasks, reference mat
 
 - **Now and Projects:** organize work with nested items, priorities, notes, links, and deadlines.
 - **Library and Archive:** keep reference material accessible and retain completed work.
-- **Agenda:** view workspace deadlines alongside Google Calendar events and scheduled Google Tasks.
+- **Agenda:** view workspace deadlines alongside Google Calendar events, scheduled Google Tasks, and Quercus assignments with submission status and local completion tracking.
 - **Daily:** plan recurring routines with weekday schedules, weekly targets, and historical completion tracking.
 - **Collaboration:** share workspace items and projects with other users.
 - **Synchronization:** preserve pending edits locally and surface conflicts when devices change the same work.
@@ -40,12 +40,16 @@ The active workspace API routes use Supabase authentication and data storage. Th
 | `GOOGLE_CALENDAR_CLIENT_ID` | Google OAuth client ID for Agenda |
 | `GOOGLE_CALENDAR_CLIENT_SECRET` | Server-side Google OAuth client secret |
 | `GOOGLE_CALENDAR_TOKEN_SECRET` | Secret used to protect stored Google credentials |
+| `QUERCUS_TOKEN_SECRET` | Dedicated server secret (32+ characters) for personal Quercus credentials |
+| `QUERCUS_ALLOWED_USER_ID` | Supabase Auth user UUID allowed to use the personal Quercus connection |
 | `SITE_URL` | Public application origin for OAuth redirects |
 | `DATABASE_URL` | Optional Postgres connection for the database adapter |
 
 For Google integration, enable Calendar and Tasks APIs and follow [the Agenda setup notes](docs/google-agenda.md). Keep server credentials outside version control. Publishable keys rely on database access controls; never substitute a privileged secret key in a `NEXT_PUBLIC_` variable. See [Supabase API key documentation](https://supabase.com/docs/guides/getting-started/api-keys).
 
 ## Commands
+
+For the personal UofT Quercus connection, follow [Quercus setup and verification](docs/quercus-agenda.md).
 
 ```bash
 npm run build          # Build the application
