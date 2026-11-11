@@ -94,3 +94,51 @@ export function getCompletionPatches<T extends BranchItem>(items: T[], id: strin
   }
   return patches;
 }
+
+/** Lifecycle operations follow saved links, including branches split by older archives. */
+export function getBranchItems<T extends BranchItem>(items: T[], rootIds: string[]) {
+  const included = new Set(rootIds);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const item of items) {
+      if (item.parentId && included.has(item.parentId) && !included.has(item.id)) {
+        included.add(item.id);
+        changed = true;
+      }
+    }
+  }
+  return items.filter(item => included.has(item.id));
+}
+
+export function getArchivePatches<T extends BranchItem>(items: T[], id: string, archived: boolean, archivedAt: string | null) {
+  const targets = getBranchItems(items, [id]);
+  const patches = new Map(targets.map(item => [item.id, { archived, archivedAt }]));
+  if (!archived) {
+    const byId = new Map(items.map(item => [item.id, item]));
+    const seen = new Set([id]);
+    let parentId = byId.get(id)?.parentId;
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId);
+      if (byId.has(parentId)) patches.set(parentId, { archived: false, archivedAt: null });
+      parentId = byId.get(parentId)?.parentId;
+    }
+  }
+  return patches;
+}
+
+/** Display legacy split archives together without silently rewriting stored records. */
+export function getArchiveViewItems<T extends BranchItem & { archivedAt: string | null }>(items: T[]): T[] {
+  const byId = new Map(items.map(item => [item.id, item]));
+  return items.map(item => {
+    const seen = new Set([item.id]);
+    let parentId = item.parentId;
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId);
+      const parent = byId.get(parentId);
+      if (parent?.archived) return { ...item, archived: true, archivedAt: item.archivedAt ?? parent.archivedAt };
+      parentId = parent?.parentId ?? null;
+    }
+    return item;
+  });
+}

@@ -19,7 +19,7 @@ import { AgendaConnections, type GoogleConnectionState } from "@/app/components/
 import { AgendaDialog } from "@/app/components/agenda-dialog";
 import { quercusComplete, quercusStatus } from "@/lib/quercus-agenda";
 import { WorkspaceSync, migrateWorkspaceCache, type WorkspaceConflict } from "@/lib/workspace-sync";
-import { getBranchLayouts, getCompletionPatches, isBranchParent, type BranchLayout } from "@/lib/item-branches";
+import { getBranchItems, getArchivePatches, getArchiveViewItems, getBranchLayouts, getCompletionPatches, isBranchParent, type BranchLayout } from "@/lib/item-branches";
 
 type Section = "now" | "projects" | "library";
 type View = Section | "archive" | "agenda" | "daily";
@@ -438,6 +438,8 @@ export default function Home() {
   const [shareTarget, setShareTarget] = useState<Item | null>(null);
   const [shareProjectTarget, setShareProjectTarget] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<View>("now");
+  const [deletion, setDeletion] = useState<{ roots: string[]; items: Item[] } | null>(null);
+  const [deleteError, setDeleteError] = useState("");
   const [query, setQuery] = useState("");
   const [capture, setCapture] = useState("");
   const [syncNotice, setSyncNotice] = useState("");
@@ -1047,6 +1049,11 @@ export default function Home() {
           ? getCompletionPatches(current, id, patch.completed)
           : [],
       );
+      if (typeof patch.archived === "boolean") {
+        for (const [itemId, archivePatch] of getArchivePatches(current, id, patch.archived, patch.archivedAt ?? null)) {
+          patches.set(itemId, { ...patches.get(itemId), ...archivePatch });
+        }
+      }
       patches.set(id, { ...patches.get(id), ...effectivePatch });
       for (const [itemId, itemPatch] of patches) {
         void sendPatch(itemId, itemPatch, itemId === id ? baseline : current.find(item => item.id === itemId));
@@ -1074,6 +1081,7 @@ export default function Home() {
       const detectedUrl = url ?? findUrl(clean);
       const displayContent = isUrl(clean) ? linkLabel(clean) : clean;
       const timestamp = new Date().toISOString();
+      const parent = parentId ? itemsRef.current.find(item => item.id === parentId) : undefined;
       const optimistic: Item = {
         id: crypto.randomUUID(),
         content: displayContent,
@@ -1086,8 +1094,8 @@ export default function Home() {
         priority: "none",
         dueDate: null,
         completed: false,
-        archived: false,
-        archivedAt: null,
+        archived: parent?.archived ?? false,
+        archivedAt: parent?.archivedAt ?? null,
         position:
           positionOverride ??
           items.filter((item) => item.section === section && item.groupName === groupName).length,
@@ -1189,26 +1197,43 @@ export default function Home() {
     }
   };
 
-  const deleteItem = useCallback(
-    async (item: Item) => {
-      if (!window.confirm(`Permanently delete “${item.content}”?`)) return;
-      try {
-        const sync = getWorkspaceSync();
-        if (!sync) return;
-        sync.enqueue("DELETE", item.id, {}, item);
-      } catch {
-        setSyncNotice("Delete could not be saved locally. Please retry.");
-        return;
-      }
-      setItems((current) => {
-        const next = current.filter((entry) => entry.id !== item.id);
-        cacheItems(next);
-        return next;
-      });
-      await flushPending();
-    },
-    [cacheItems, flushPending, getWorkspaceSync],
-  );
+  const requestDeletion = (roots: string[]) => {
+    setDeleteError("");
+    setDeletion({ roots, items: getBranchItems(itemsRef.current, roots) });
+  };
+  const deleteItem = (item: Item) => requestDeletion([item.id]);
+
+  const confirmDeletion = () => {
+    if (!deletion) return;
+    const targets = getBranchItems(itemsRef.current, deletion.roots);
+    const reviewed = new Set(deletion.items.map(item => item.id));
+    if (targets.length !== reviewed.size || targets.some(item => !reviewed.has(item.id))) {
+      setDeletion({ ...deletion, items: targets });
+      setDeleteError("This branch changed. Review the updated list before deleting.");
+      return;
+    }
+    if (targets.some(item => item.ownerId && item.ownerId !== session?.user.id)) {
+      setDeleteError("This branch includes a line owned by someone else and cannot be deleted together.");
+      return;
+    }
+    try {
+      const sync = getWorkspaceSync();
+      if (!sync) throw new Error("No session");
+      // Delete leaves first so parent removal cannot detach a pending child.
+      const ordered = sortVisibleItems(targets, "manual").reverse();
+      for (const item of ordered) sync.enqueue("DELETE", item.id, {}, item);
+    } catch {
+      setDeleteError("The deletion could not be fully saved locally. Keep this tab open and retry.");
+      return;
+    }
+    const next = itemsRef.current.filter(item => !reviewed.has(item.id));
+    itemsRef.current = next;
+    setItems(next);
+    cacheItems(next);
+    setSelectedIds(current => new Set([...current].filter(id => !reviewed.has(id))));
+    setDeletion(null);
+    void flushPending();
+  };
 
   const saveDailyItem = useCallback(
     async (id: string | null, draft: DailyDraft) => {
@@ -1397,10 +1422,12 @@ export default function Home() {
     [authenticatedFetch, loadCollaborations],
   );
 
+  const archiveViewItems = useMemo(() => getArchiveViewItems(items), [items]);
+
   const activeItems = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (needle) {
-      const results = items
+      const results = archiveViewItems
         .filter((item) =>
           `${item.content} ${item.groupName} ${item.note} ${item.url ?? ""} ${(item.links ?? []).join(" ")} ${item.dueDate ?? ""} ${item.dueDate ? fullDateLabel(item.dueDate) : ""} ${item.priority}`
             .toLowerCase()
@@ -1408,13 +1435,13 @@ export default function Home() {
         );
       return sortVisibleItems(results, sortMode);
     }
-    if (activeView === "archive") return sortVisibleItems(items.filter((item) => item.archived), sortMode);
+    if (activeView === "archive") return sortVisibleItems(archiveViewItems.filter((item) => item.archived), sortMode);
     if (activeView === "agenda" || activeView === "daily") return [];
     return sortVisibleItems(
-      items.filter((item) => item.section === activeView && !item.archived),
+      archiveViewItems.filter((item) => item.section === activeView && !item.archived),
       sortMode,
     );
-  }, [activeView, items, query, sortMode]);
+  }, [activeView, archiveViewItems, query, sortMode]);
 
   const branchLayouts = useMemo(() => getBranchLayouts(activeItems), [activeItems]);
 
@@ -1437,17 +1464,17 @@ export default function Home() {
           .map((completion) => completion.dailyId),
       );
       return {
-        now: items.filter((item) => item.section === "now" && !item.archived && !item.completed).length,
-        projects: new Set(items.filter((item) => item.section === "projects" && !item.archived).map((item) => item.groupName)).size,
-        library: items.filter((item) => item.section === "library" && !item.archived).length,
-        archive: items.filter((item) => item.archived).length,
-        agenda: items.filter((item) => item.dueDate && !item.archived && !item.completed).length,
+        now: archiveViewItems.filter((item) => item.section === "now" && !item.archived && !item.completed).length,
+        projects: new Set(archiveViewItems.filter((item) => item.section === "projects" && !item.archived).map((item) => item.groupName)).size,
+        library: archiveViewItems.filter((item) => item.section === "library" && !item.archived).length,
+        archive: archiveViewItems.filter((item) => item.archived).length,
+        agenda: archiveViewItems.filter((item) => item.dueDate && !item.archived && !item.completed).length,
         daily: dailyItems.filter(
           (item) => isDailyScheduled(item, today) && !finishedToday.has(item.id),
         ).length,
       };
     },
-    [dailyCompletions, dailyItems, items],
+    [dailyCompletions, dailyItems, archiveViewItems],
   );
 
   const groups = useMemo(() => {
@@ -1848,24 +1875,8 @@ export default function Home() {
     }
   };
 
-  const deleteSelection = async () => {
-    if (!selectedItems.length) return;
-    if (!window.confirm(`Permanently delete ${selectedItems.length} selected items?`)) return;
-    try {
-      const sync = getWorkspaceSync();
-      if (!sync) return;
-      for (const item of selectedItems) sync.enqueue("DELETE", item.id, {}, item);
-    } catch {
-      setSyncNotice("Some deletes could not be queued. Keep the tab open and retry.");
-      return;
-    }
-    setItems((current) => {
-      const next = current.filter((item) => !selectedIds.has(item.id));
-      cacheItems(next);
-      return next;
-    });
-    setSelectedIds(new Set());
-    await flushPending();
+  const deleteSelection = () => {
+    if (selectedItems.length) requestDeletion(selectedItems.map(item => item.id));
   };
 
   const exportRecovery = () => {
@@ -2549,6 +2560,22 @@ export default function Home() {
           </div>
         )}
       </section>
+      {deletion && (
+        <AgendaDialog title="Delete permanently" className="delete-branch-dialog" onClose={() => setDeletion(null)}>
+          <div className="delete-branch-content">
+            <span className="delete-eyebrow">Ink & Iron · Archive</span>
+            <h2>Let this branch go?</h2>
+            <p>This will permanently delete {deletion.items.length} {deletion.items.length === 1 ? "line" : "lines"}, including all linked subpoints. This cannot be undone.</p>
+            <ul>{deletion.items.slice(0, 5).map(item => <li key={item.id}>{item.content}</li>)}</ul>
+            {deletion.items.length > 5 && <p>And {deletion.items.length - 5} more lines.</p>}
+            {deleteError && <p className="delete-error" role="alert">{deleteError}</p>}
+            <footer>
+              <button type="button" onClick={() => setDeletion(null)}>Cancel</button>
+              <button type="button" className="delete-confirm" onClick={confirmDeletion}>Delete {deletion.items.length} {deletion.items.length === 1 ? "line" : "lines"}</button>
+            </footer>
+          </div>
+        </AgendaDialog>
+      )}
     </main>
   );
 }
@@ -4663,7 +4690,7 @@ function ItemLine({
       ))}
       {branch.depth > 0 && <span className={`branch-rail branch-join ${branch.lastChild ? "last-child" : ""}`} aria-hidden="true" />}
       {branch.childCount > 0 && <span className="branch-stem" aria-hidden="true" />}
-      <button className="drag-handle" aria-label={`Reorder ${item.content}`}>⠿</button>
+      <button className="drag-handle" style={{ "--drag-offset": branch.depth } as React.CSSProperties} aria-label={`Reorder ${item.content}`}>⠿</button>
       <button
         className="check"
         aria-pressed={item.completed}

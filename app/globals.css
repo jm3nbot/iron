@@ -5222,3 +5222,28 @@ select:focus-visible {
   .agenda-dialog-surface > header, .connection-settings, .quercus-details { padding: 16px; }
   .quercus-detail-meta > div { grid-template-columns: 70px minmax(0,1fr); }
 }
+
+/* Keep drag grips in a separate gutter, left of every branch connector. */
+.item-line > .drag-handle {
+  position: absolute;
+  left: calc(-6px - var(--drag-offset, 0) * var(--branch-step));
+  top: 10px;
+  width: 18px;
+  border-radius: 3px;
+  background: var(--ink);
+  z-index: 2;
+}
+.item-line > .check { grid-column: 2; }
+.item-line > .item-main { grid-column: 3; }
+
+.delete-branch-dialog { max-width: 470px; }
+.delete-branch-content { padding: 24px; }
+.delete-eyebrow { color: var(--copper); font: 10px var(--sans); text-transform: uppercase; letter-spacing: .12em; }
+.delete-branch-content h2 { margin: 12px 0; font: 27px var(--rail-serif); color: var(--paper); }
+.delete-branch-content p { color: var(--paper-muted); font: 13px/1.6 var(--sans); }
+.delete-branch-content ul { padding: 14px 14px 14px 30px; border-left: 2px solid var(--copper); background: var(--ink); font: 13px/1.7 var(--sans); overflow-wrap: anywhere; }
+.delete-branch-content footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.delete-branch-content footer button { min-height: 40px; padding: 9px 14px; border: 1px solid var(--steel); border-radius: 4px; background: var(--ink-raised); cursor: pointer; font: 12px var(--sans); }
+.delete-branch-content footer .delete-confirm { background: var(--copper); border-color: var(--copper); color: var(--ink-raised); }
+.delete-branch-content .delete-error { color: var(--danger); }
+@media (max-width: 640px) { .item-line > .drag-handle { display: none; } }

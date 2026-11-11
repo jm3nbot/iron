@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getBranchLayouts, getCompletionPatches } from "../lib/item-branches.ts";
+import { getBranchItems, getArchivePatches, getArchiveViewItems, getBranchLayouts, getCompletionPatches } from "../lib/item-branches.ts";
 
 const line = (id, parentId = null, extra = {}) => ({
   id, parentId, section: "now", groupName: "", archived: false, completed: false, ...extra,
@@ -65,4 +65,30 @@ test("broken and cyclic parent links terminate safely", () => {
   assert.equal(getBranchLayouts(items).get("self").depth, 0);
   assert.equal(getCompletionPatches(items, "a", true).size, 2);
   assert.equal(getCompletionPatches(items, "missing", true).size, 0);
+});
+
+
+test("archive and restore include nested descendants, even legacy split archives", () => {
+  const items = tree().map(item => ({...item, archived: item.id === "parent", archivedAt: item.id === "parent" ? "2026-11-11" : null}));
+  const archived = apply(items, getArchivePatches(items, "parent", true, "2026-11-11"));
+  assert.equal(archived.filter(item => item.archived).length, 4);
+  assert.equal(archived.find(item => item.id === "other").archived, false);
+  const restored = apply(archived, getArchivePatches(archived, "parent", false, null));
+  assert.ok(restored.every(item => !item.archived && item.archivedAt === null));
+  const view = getArchiveViewItems(items);
+  assert.equal(view.filter(item => item.archived).length, 4);
+  assert.equal(getBranchLayouts(view).get("nested").depth, 2);
+  assert.equal(items.find(item => item.id === "child").archived, false);
+});
+
+test("restoring a nested subpoint restores its ancestors without losing sibling archives", () => {
+  const items = tree().map(item => ({...item, archived:true}));
+  const restored = apply(items, getArchivePatches(items, "nested", false, null));
+  assert.deepEqual(restored.filter(item => !item.archived).map(item => item.id), ["parent", "child", "nested"]);
+});
+
+test("deletion gathers full branches once, including mixed archive states and cycles", () => {
+  assert.deepEqual(getBranchItems(tree(), ["parent", "child"]).map(item => item.id), ["parent", "child", "nested", "last"]);
+  assert.deepEqual(getBranchItems(tree(), ["child"]).map(item => item.id), ["child", "nested"]);
+  assert.equal(getBranchItems([line("a", "b"),line("b", "a")], ["a"]).length, 2);
 });
