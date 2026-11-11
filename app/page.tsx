@@ -19,6 +19,7 @@ import { AgendaConnections, type GoogleConnectionState } from "@/app/components/
 import { AgendaDialog } from "@/app/components/agenda-dialog";
 import { quercusComplete, quercusStatus } from "@/lib/quercus-agenda";
 import { WorkspaceSync, migrateWorkspaceCache, type WorkspaceConflict } from "@/lib/workspace-sync";
+import { getBranchLayouts, getCompletionPatches, isBranchParent, type BranchLayout } from "@/lib/item-branches";
 
 type Section = "now" | "projects" | "library";
 type View = Section | "archive" | "agenda" | "daily";
@@ -386,12 +387,8 @@ function sortVisibleItems(items: Item[], mode: SortMode) {
   const roots: Item[] = [];
 
   for (const item of items) {
-    const parent = item.parentId ? included.get(item.parentId) : null;
-    const hasVisibleParent =
-      parent &&
-      parent.section === item.section &&
-      parent.groupName === item.groupName &&
-      parent.archived === item.archived;
+    const parent = item.parentId ? included.get(item.parentId) : undefined;
+    const hasVisibleParent = parent && isBranchParent(parent, item);
 
     if (hasVisibleParent) {
       children.set(parent.id, [...(children.get(parent.id) ?? []), item]);
@@ -1025,10 +1022,11 @@ export default function Home() {
 
   const updateItem = useCallback(
     (id: string, patch: Patch, baseline?: Item) => {
-      const target = items.find((item) => item.id === id);
+      const current = itemsRef.current;
+      const target = current.find((item) => item.id === id);
       let effectivePatch = patch;
       if (target && patch.completed === true && !target.completed) {
-        const siblingPositions = items
+        const siblingPositions = current
           .filter(
             (item) =>
               item.id !== id &&
@@ -1044,13 +1042,21 @@ export default function Home() {
           position: Math.max(-1, ...siblingPositions) + 1,
         };
       }
-      void sendPatch(id, effectivePatch, baseline);
-      const next = itemsRef.current.map((item) => item.id === id ? { ...item, ...effectivePatch } : item);
+      const patches = new Map<string, Patch>(
+        typeof patch.completed === "boolean"
+          ? getCompletionPatches(current, id, patch.completed)
+          : [],
+      );
+      patches.set(id, { ...patches.get(id), ...effectivePatch });
+      for (const [itemId, itemPatch] of patches) {
+        void sendPatch(itemId, itemPatch, itemId === id ? baseline : current.find(item => item.id === itemId));
+      }
+      const next = current.map((item) => patches.has(item.id) ? { ...item, ...patches.get(item.id) } : item);
       itemsRef.current = next;
       setItems(next);
       cacheItems(next);
     },
-    [cacheItems, items, sendPatch],
+    [cacheItems, sendPatch],
   );
 
   const createItem = useCallback(
@@ -1101,6 +1107,7 @@ export default function Home() {
         setSyncNotice("Browser storage is unavailable. This line was not added—copy it somewhere safe and try again.");
         return false;
       }
+      if (parentId) updateItem(parentId, { completed: false });
       const next = [...itemsRef.current, optimistic];
       itemsRef.current = next;
       setItems(next);
@@ -1108,26 +1115,27 @@ export default function Home() {
       void flushPending();
       return true;
     },
-    [cacheItems, flushPending, getWorkspaceSync, items, session?.user.id, username],
+    [cacheItems, flushPending, getWorkspaceSync, items, session?.user.id, updateItem, username],
   );
 
   const createSubItem = useCallback(
     (parent: Item) => {
-      const siblings = items
+      const siblings = sortVisibleItems(itemsRef.current
         .filter(
           (item) =>
             item.section === parent.section &&
             item.groupName === parent.groupName &&
             item.archived === parent.archived,
-        )
-        .sort(sortItems);
+        ), "manual");
+      const layouts = getBranchLayouts(siblings);
+      const parentDepth = layouts.get(parent.id)?.depth ?? 0;
       const parentIndex = siblings.findIndex((item) => item.id === parent.id);
       if (parentIndex < 0) return;
 
       let insertionIndex = parentIndex + 1;
       while (
         insertionIndex < siblings.length &&
-        siblings[insertionIndex].indent > parent.indent
+        (layouts.get(siblings[insertionIndex].id)?.depth ?? 0) > parentDepth
       ) {
         insertionIndex += 1;
       }
@@ -1138,18 +1146,17 @@ export default function Home() {
         if (item.position !== position) positionUpdates.set(item.id, position);
       });
       if (positionUpdates.size) {
-        setItems((current) => {
-          const next = current.map((item) =>
-            positionUpdates.has(item.id)
-              ? { ...item, position: positionUpdates.get(item.id)! }
-              : item,
-          );
-          cacheItems(next);
-          return next;
-        });
         for (const [id, position] of positionUpdates) {
           void sendPatch(id, { position });
         }
+        const next = itemsRef.current.map((item) =>
+          positionUpdates.has(item.id)
+            ? { ...item, position: positionUpdates.get(item.id)! }
+            : item,
+        );
+        itemsRef.current = next;
+        setItems(next);
+        cacheItems(next);
       }
 
       void createItem(
@@ -1157,12 +1164,12 @@ export default function Home() {
         parent.section,
         parent.groupName,
         null,
-        Math.min(3, parent.indent + 1),
+        Math.min(3, parentDepth + 1),
         insertionIndex,
         parent.id,
       );
     },
-    [cacheItems, createItem, items, sendPatch],
+    [cacheItems, createItem, sendPatch],
   );
 
   const cycleSortMode = () => {
@@ -1408,6 +1415,8 @@ export default function Home() {
       sortMode,
     );
   }, [activeView, items, query, sortMode]);
+
+  const branchLayouts = useMemo(() => getBranchLayouts(activeItems), [activeItems]);
 
   const dailySearchResults = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -2251,6 +2260,7 @@ export default function Home() {
                 <ItemLine
                   key={item.id}
                   item={item}
+                  branch={branchLayouts.get(item.id)!}
                   selected={selectedIds.has(item.id)}
                   updateItem={updateItem}
                   deleteItem={deleteItem}
@@ -2433,6 +2443,7 @@ export default function Home() {
                         <ItemLine
                           key={item.id}
                           item={item}
+                          branch={branchLayouts.get(item.id)!}
                           selected={selectedIds.has(item.id)}
                           updateItem={updateItem}
                           deleteItem={deleteItem}
@@ -4507,6 +4518,7 @@ function InlineAdd({ onAdd }: { onAdd: (value: string) => void }) {
 
 function ItemLine({
   item,
+  branch,
   selected,
   updateItem,
   deleteItem,
@@ -4519,6 +4531,7 @@ function ItemLine({
   onDrop,
 }: {
   item: Item;
+  branch: BranchLayout;
   selected: boolean;
   updateItem: (id: string, patch: Patch, baseline?: Item) => void;
   deleteItem: (item: Item) => void;
@@ -4630,9 +4643,9 @@ function ItemLine({
 
   return (
     <article
-      className={`item-line ${item.completed ? "completed" : ""} ${item.indent > 0 ? "sub-point" : ""} ${selected ? "selected-item" : ""}`}
+      className={`item-line ${item.completed ? "completed" : ""} ${branch.depth > 0 ? "sub-point" : ""} ${branch.childCount ? "has-subpoints" : ""} ${selected ? "selected-item" : ""}`}
       data-item-id={item.id}
-      style={{ "--indent": item.indent } as React.CSSProperties}
+      style={{ "--indent": branch.depth } as React.CSSProperties}
       draggable
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -4645,10 +4658,17 @@ function ItemLine({
         onDrop();
       }}
     >
+      {branch.continuations.map(offset => (
+        <span key={offset} className="branch-rail branch-continuation" aria-hidden="true" style={{ "--branch-offset": offset } as React.CSSProperties} />
+      ))}
+      {branch.depth > 0 && <span className={`branch-rail branch-join ${branch.lastChild ? "last-child" : ""}`} aria-hidden="true" />}
+      {branch.childCount > 0 && <span className="branch-stem" aria-hidden="true" />}
       <button className="drag-handle" aria-label={`Reorder ${item.content}`}>⠿</button>
       <button
         className="check"
+        aria-pressed={item.completed}
         aria-label={item.completed ? `Restore ${item.content}` : `Complete ${item.content}`}
+        title={branch.childCount && !item.completed ? "Complete this line and all its subpoints" : undefined}
         onClick={() => updateItem(item.id, { completed: !item.completed })}
       >
       </button>
@@ -4668,6 +4688,11 @@ function ItemLine({
             }}
             onKeyDown={onKeyDown}
           />
+          {branch.childCount > 0 && (
+            <span className="subpoint-progress" aria-label={`${branch.completedChildren} of ${branch.childCount} subpoints complete`}>
+              {branch.completedChildren}/{branch.childCount}
+            </span>
+          )}
         </div>
         {(item.links ?? []).length > 0 && (
           <div className="item-links">
@@ -4761,9 +4786,7 @@ function ItemLine({
             <span aria-hidden="true">📧</span>
           </button>
         )}
-        <button aria-label="Add sub-point" title="Add sub-point" onClick={addSubItem}>↳</button>
-        <button aria-label="Decrease indent" disabled={item.indent === 0} onClick={() => updateItem(item.id, { indent: item.indent - 1 })}>←</button>
-        <button aria-label="Increase indent" disabled={item.indent === 3} onClick={() => updateItem(item.id, { indent: item.indent + 1 })}>→</button>
+        <button className="subpoint-tool" aria-label="Add sub-point" title="Add sub-point" onClick={addSubItem}>+</button>
         <select
           aria-label={`Move ${item.content}`}
           value={item.section}
